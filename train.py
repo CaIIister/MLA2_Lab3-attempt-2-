@@ -21,14 +21,21 @@ try:
 
     CUDA_AVAILABLE = torch.cuda.is_available()
     DEVICE = torch.device("cuda" if CUDA_AVAILABLE else "cpu")
+
+    # Check PyTorch version for compatibility
+    torch_version = torch.__version__
+    print(f"🚀 PyTorch Version: {torch_version}")
     print(f"🚀 CUDA Available: {CUDA_AVAILABLE}")
     if CUDA_AVAILABLE:
         print(f"📱 GPU: {torch.cuda.get_device_name(0)}")
         print(f"💾 GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
-except ImportError:
+        # Clear GPU cache for clean start
+        torch.cuda.empty_cache()
+except ImportError as e:
     CUDA_AVAILABLE = False
     DEVICE = "cpu"
-    print("⚠️ PyTorch not found. Install with: pip install torch torchvision")
+    print(f"⚠️ PyTorch not found: {e}")
+    print("Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
 
 try:
     from tqdm import tqdm
@@ -70,15 +77,28 @@ class EnhancedDQN(nn.Module):
         # Move to GPU if available
         self.to(DEVICE)
 
-        # Enhanced optimizer with weight decay
-        self.optimizer = optim.AdamW(self.parameters(), lr=learning_rate,
-                                     weight_decay=1e-4, eps=1e-7)
+        # Enhanced optimizer with weight decay (compatible with older PyTorch)
+        try:
+            self.optimizer = optim.AdamW(self.parameters(), lr=learning_rate,
+                                         weight_decay=1e-4, eps=1e-7)
+        except AttributeError:
+            # Fallback to Adam for older PyTorch versions without AdamW
+            print("⚠️ AdamW not available, using Adam optimizer")
+            self.optimizer = optim.Adam(self.parameters(), lr=learning_rate,
+                                        weight_decay=1e-4, eps=1e-7)
 
-        # Learning rate scheduler
-        self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.8, patience=15,
-            min_lr=1e-6, verbose=True
-        )
+        # Learning rate scheduler (compatible with older PyTorch versions)
+        try:
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.8, patience=15,
+                min_lr=1e-6, verbose=True
+            )
+        except TypeError:
+            # Fallback for older PyTorch versions without verbose parameter
+            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                self.optimizer, mode='min', factor=0.8, patience=15,
+                min_lr=1e-6
+            )
 
         # Loss function with smoothing
         self.criterion = nn.SmoothL1Loss()
@@ -551,6 +571,17 @@ class ContourGameTrainer:
         print(f"🎯 Contour Game Trainer - Episodes: {episodes}")
         print(f"⚙️ Device: {'CUDA' if self.use_cuda else 'CPU'}")
 
+        # GPU memory check for RTX 2060
+        if self.use_cuda:
+            gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+            if gpu_memory_gb < 4.0:
+                print("⚠️ Low GPU memory detected, reducing batch size")
+                self.batch_size = 32
+            else:
+                self.batch_size = 64  # Optimal for RTX 2060
+        else:
+            self.batch_size = 32  # Conservative for CPU
+
         # Create enhanced player
         self.player = ContourGamePlayer("Enhanced Player", use_cuda=self.use_cuda)
 
@@ -565,10 +596,13 @@ class ContourGameTrainer:
 
         # Training parameters
         self.replay_buffer = deque(maxlen=100000)  # Larger buffer
-        self.batch_size = 64  # Moderate batch size
         self.target_update_freq = 200  # More frequent updates
         self.eval_freq = 500
         self.min_buffer_size = 5000
+
+        print(f"📊 Batch size: {self.batch_size}")
+        print(f"💾 Replay buffer: {100000}")
+        print(f"🔄 Target update frequency: {self.target_update_freq}")
 
         # Enhanced training parameters
         self.gamma = 0.99  # Higher discount for strategic game
@@ -625,6 +659,10 @@ class ContourGameTrainer:
 
             # Evaluation
             if episode % self.eval_freq == 0 and episode > 0:
+                # Clear GPU memory before evaluation
+                if self.use_cuda:
+                    torch.cuda.empty_cache()
+
                 win_rate, wins, losses = self.evaluate(num_games=100)
                 self.win_rates.append(win_rate)
 
@@ -638,13 +676,20 @@ class ContourGameTrainer:
                 avg_reward = np.mean(self.episode_rewards[-self.eval_freq:])
                 avg_loss = np.mean(self.losses[-100:]) if self.losses else 0
 
+                # GPU memory info
+                gpu_info = ""
+                if self.use_cuda:
+                    gpu_memory_used = torch.cuda.memory_allocated() / 1e9
+                    gpu_memory_cached = torch.cuda.memory_reserved() / 1e9
+                    gpu_info = f" | GPU: {gpu_memory_used:.1f}GB"
+
                 status = (f"Ep {episode:5d} | "
                           f"Win: {win_rate:5.1f}% | "
                           f"Best: {self.best_win_rate:5.1f}% | "
                           f"Reward: {avg_reward:6.2f} | "
                           f"Loss: {avg_loss:8.4f} | "
                           f"ε: {self.player.epsilon:.4f} | "
-                          f"Time: {elapsed / 60:.1f}m")
+                          f"Time: {elapsed / 60:.1f}m{gpu_info}")
 
                 if TQDM_AVAILABLE:
                     tqdm.write(status)
