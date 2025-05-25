@@ -598,7 +598,7 @@ class ContourGameTrainer:
 
         # Target network
         self.target_network = EnhancedDQN(
-            input_size=200,
+            input_size=193,
             hidden_sizes=[512, 256, 128],
             output_size=7,
             learning_rate=0.0005
