@@ -336,7 +336,7 @@ class FastTrainer:
         # Fast training configurations
         self.configs = {
             "turbo": {
-                "episodes": 3000,  # Increased episodes
+                "episodes": 1000,  # Increased episodes
                 "buffer_size": 30000,  # Larger buffer
                 "batch_size": 128,  # Increased batch size
                 "target_update": 100,
@@ -346,7 +346,7 @@ class FastTrainer:
                 "description": "Ultra-fast training (20-25 minutes)"
             },
             "speed": {
-                "episodes": 5000,
+                "episodes": 2000,
                 "buffer_size": 40000,
                 "batch_size": 256,
                 "target_update": 150,
@@ -356,7 +356,7 @@ class FastTrainer:
                 "description": "Fast training (30-35 minutes)"
             },
             "balanced": {
-                "episodes": 7000,
+                "episodes": 3000,
                 "buffer_size": 60000,
                 "batch_size": 512,
                 "target_update": 200,
