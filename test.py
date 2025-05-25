@@ -1,16 +1,26 @@
 #!/usr/bin/env python3
 """
-Fast test script for the fast-trained model.
-Compatible with fast_weights.pkl from fast_train.py
+Enhanced test script for the CUDA-optimized DQN player
 """
 
 import numpy as np
+import random
 import gamerules
 import time
-import pickle
-import os
 
-# Try to import tqdm for progress bar
+# CUDA Support
+try:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    CUDA_AVAILABLE = torch.cuda.is_available()
+    DEVICE = torch.device("cuda" if CUDA_AVAILABLE else "cpu")
+except ImportError:
+    CUDA_AVAILABLE = False
+    DEVICE = "cpu"
+    print("⚠️ PyTorch not found. Using fallback implementation.")
+
 try:
     from tqdm import tqdm
 
@@ -19,14 +29,57 @@ except ImportError:
     TQDM_AVAILABLE = False
 
 
-class FastDQN:
-    """Fast DQN network (same as in fast_train.py)"""
+class EnhancedDQN(nn.Module):
+    """Enhanced DQN (same as in training script)"""
 
-    def __init__(self, input_size=84, hidden_sizes=[128, 64], output_size=7, learning_rate=0.001):
+    def __init__(self, input_size=200, hidden_sizes=[512, 256, 128], output_size=7,
+                 learning_rate=0.0005, dropout_rate=0.3):
+        super(EnhancedDQN, self).__init__()
+
         self.input_size = input_size
-        self.hidden_sizes = hidden_sizes
         self.output_size = output_size
-        self.learning_rate = learning_rate
+
+        layers = []
+        layer_sizes = [input_size] + hidden_sizes + [output_size]
+
+        for i in range(len(layer_sizes) - 1):
+            layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
+            if i < len(layer_sizes) - 2:
+                layers.append(nn.BatchNorm1d(layer_sizes[i + 1]))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout_rate))
+
+        self.network = nn.Sequential(*layers)
+        self.to(DEVICE)
+
+    def forward(self, x):
+        return self.network(x)
+
+    def predict(self, state):
+        self.eval()
+        with torch.no_grad():
+            if isinstance(state, np.ndarray):
+                state = torch.FloatTensor(state).to(DEVICE)
+            if len(state.shape) == 1:
+                state = state.unsqueeze(0)
+            return self.forward(state).cpu().numpy()
+
+    def load_weights(self, filepath):
+        try:
+            checkpoint = torch.load(filepath, map_location=DEVICE)
+            self.load_state_dict(checkpoint['state_dict'])
+            return True
+        except Exception as e:
+            print(f"Error loading weights: {e}")
+            return False
+
+
+class FallbackDQN:
+    """Fallback NumPy implementation if PyTorch is not available"""
+
+    def __init__(self, input_size=200, hidden_sizes=[512, 256, 128], output_size=7):
+        self.input_size = input_size
+        self.output_size = output_size
 
         # Initialize network
         self.layers = []
@@ -45,73 +98,50 @@ class FastDQN:
 
     def forward(self, x):
         current_input = x
-
         for i, layer in enumerate(self.layers):
             z = np.dot(current_input, layer['weights']) + layer['biases']
-
-            if i < len(self.layers) - 1:  # Hidden layers
-                activation = self.relu(z)
-            else:  # Output layer
-                activation = z
-
-            current_input = activation
-
+            if i < len(self.layers) - 1:
+                current_input = self.relu(z)
+            else:
+                current_input = z
         return current_input
 
-    def predict(self, x):
-        if len(x.shape) == 1:
-            x = x.reshape(1, -1)
-        return self.forward(x)
+    def predict(self, state):
+        if len(state.shape) == 1:
+            state = state.reshape(1, -1)
+        return self.forward(state)
 
     def load_weights(self, filepath):
-        """Load weights from file"""
-        try:
-            with open(filepath, 'rb') as f:
-                weights_data = pickle.load(f)
-
-            # Verify compatibility
-            if (weights_data['input_size'] != self.input_size or
-                    weights_data['output_size'] != self.output_size or
-                    len(weights_data['layers']) != len(self.layers)):
-                print("Warning: Architecture mismatch")
-                return False
-
-            # Load weights
-            for i, layer_data in enumerate(weights_data['layers']):
-                if (layer_data['weights'].shape != self.layers[i]['weights'].shape or
-                        layer_data['biases'].shape != self.layers[i]['biases'].shape):
-                    print(f"Warning: Layer {i} shape mismatch")
-                    return False
-
-                self.layers[i]['weights'] = layer_data['weights']
-                self.layers[i]['biases'] = layer_data['biases']
-
-            return True
-
-        except Exception as e:
-            print(f"Error loading weights: {e}")
-            return False
+        # Cannot load PyTorch weights in NumPy implementation
+        print("⚠️ Cannot load PyTorch weights with fallback implementation")
+        return False
 
 
-class FastTestPlayer(gamerules.Player):
-    """Fast test player compatible with fast training"""
+class EnhancedTestPlayer(gamerules.Player):
+    """Enhanced test player with full contour-aware features"""
 
     def __init__(self, name, weights_file=None):
         super().__init__(name)
         self.name = name
 
-        # Initialize fast DQN
-        self.q_network = FastDQN(
-            input_size=84,
-            hidden_sizes=[128, 64],
-            output_size=7,
-            learning_rate=0.001
-        )
+        # Initialize network
+        if CUDA_AVAILABLE:
+            self.q_network = EnhancedDQN(
+                input_size=200,
+                hidden_sizes=[512, 256, 128],
+                output_size=7
+            )
+        else:
+            self.q_network = FallbackDQN(
+                input_size=200,
+                hidden_sizes=[512, 256, 128],
+                output_size=7
+            )
 
         # Load weights if provided
-        if weights_file and os.path.exists(weights_file):
+        if weights_file:
             if self.q_network.load_weights(weights_file):
-                print(f"✅ Loaded fast weights from {weights_file}")
+                print(f"✅ Loaded enhanced weights from {weights_file}")
             else:
                 print("⚠️ Failed to load weights, using random weights")
         else:
@@ -123,39 +153,54 @@ class FastTestPlayer(gamerules.Player):
     def newGame(self, new_opponent):
         pass
 
-    def encode_state_fast(self, board, startValue):
-        """Fast state encoding (same as in fast_train.py)"""
+    def encode_state_contour_aware(self, board, startValue):
+        """Enhanced state encoding (same as training script)"""
         features = []
 
-        # Basic board state (42 features)
+        # === CORE BOARD STATE (42 features) ===
         board_normalized = board.board * startValue
         features.extend(board_normalized.flatten())
 
-        # Column heights (7 features)
+        # === CRITICAL: COMPONENT ANALYSIS (84 features) ===
+        components_normalized = np.sign(board.components) * startValue
+        features.extend(components_normalized.flatten())
+
+        components4_normalized = np.sign(board.components4) * startValue
+        features.extend(components4_normalized.flatten())
+
+        # === CONTOUR-SPECIFIC FEATURES (74 features) ===
+
+        # Column analysis (14 features)
         for col in range(7):
             height = 6 - len(np.where(board.board[:, col] == 0)[0])
             features.append(height / 6.0)
+            contour_potential = self._analyze_contour_potential(board, col, startValue)
+            features.append(contour_potential)
 
-        # Piece counts per column (14 features)
+        # Component size analysis (14 features)
+        own_components = self._analyze_component_structure(board, startValue)
+        opp_components = self._analyze_component_structure(board, -startValue)
+        features.extend(own_components[:7])
+        features.extend(opp_components[:7])
+
+        # Enclosure analysis (14 features)
         for col in range(7):
-            own_pieces = np.sum(board.board[:, col] == startValue)
-            opp_pieces = np.sum(board.board[:, col] == -startValue)
-            features.append(own_pieces / 6.0)
-            features.append(opp_pieces / 6.0)
+            can_enclose = self._can_create_enclosure(board, col, startValue)
+            being_enclosed = self._being_enclosed_threat(board, col, startValue)
+            features.extend([can_enclose, being_enclosed])
 
-        # Center control (3 features)
-        center_own = sum(np.sum(board.board[:, col] == startValue) for col in [2, 3, 4])
-        center_opp = sum(np.sum(board.board[:, col] == -startValue) for col in [2, 3, 4])
+        # Strategic positioning (14 features)
+        center_control = sum(np.sum(board.board[:, col] == startValue) for col in [2, 3, 4]) / 18.0
+        edge_control = sum(np.sum(board.board[:, col] == startValue) for col in [0, 1, 5, 6]) / 24.0
+        features.append(center_control)
+        features.append(edge_control)
+
+        # Connectivity patterns (12 features)
+        connectivity_metrics = self._analyze_connectivity_patterns(board, startValue)
+        features.extend(connectivity_metrics)
+
+        # Game phase indicators (3 features)
         total_pieces = np.sum(board.board != 0)
-        features.extend([center_own / 18.0, center_opp / 18.0, total_pieces / 42.0])
-
-        # Immediate threats (14 features)
-        for col in range(7):
-            can_win = self._can_win_fast(board, col, startValue)
-            must_block = self._can_win_fast(board, col, -startValue)
-            features.extend([1.0 if can_win else 0.0, 1.0 if must_block else 0.0])
-
-        # Game phase (3 features)
         if total_pieces < 14:
             features.extend([1.0, 0.0, 0.0])
         elif total_pieces < 28:
@@ -163,54 +208,196 @@ class FastTestPlayer(gamerules.Player):
         else:
             features.extend([0.0, 0.0, 1.0])
 
-        # Starting player (1 feature)
+        # Starting player advantage (1 feature)
         features.append(1.0 if startValue == 1 else 0.0)
+
+        # Formation stability (7 features)
+        stability_metrics = self._analyze_formation_stability(board, startValue)
+        features.extend(stability_metrics)
 
         return np.array(features, dtype=np.float32)
 
-    def _can_win_fast(self, board, col, player_value):
-        """Fast win detection"""
+    def _analyze_contour_potential(self, board, col, player_value):
+        """Analyze potential for creating contours in a column"""
         if col not in self.getPossibleActions(board.board):
-            return False
+            return 0.0
 
         temp_board = board.board.copy()
         empty_rows = np.where(temp_board[:, col] == 0)[0]
         if len(empty_rows) == 0:
-            return False
+            return 0.0
 
         row = np.max(empty_rows)
         temp_board[row, col] = player_value
 
-        temp_board_obj = gamerules.Board()
-        temp_board_obj.board = temp_board
-        temp_board_obj.components = board.components.copy()
-        temp_board_obj.components4 = board.components4.copy()
-        temp_board_obj.updateComponents(row, col, player_value)
-        temp_board_obj.updateComponents4(row, col, player_value)
+        contour_score = 0.0
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = row + dr, col + dc
+                if 0 <= nr < 6 and 0 <= nc < 7:
+                    if temp_board[nr, nc] == player_value:
+                        contour_score += 0.1
+                    elif temp_board[nr, nc] == -player_value:
+                        contour_score += 0.05
 
-        return temp_board_obj.checkVictory(col, player_value)
+        return min(1.0, contour_score)
+
+    def _analyze_component_structure(self, board, player_value):
+        """Analyze component structure"""
+        features = [0.0] * 10
+
+        components = board.components * (np.sign(board.components) == np.sign(player_value))
+        if np.any(components):
+            unique_components, counts = np.unique(components[components != 0], return_counts=True)
+
+            for i, count in enumerate(counts[:7]):
+                if i < 7:
+                    features[i] = min(1.0, count / 10.0)
+
+            if len(counts) > 0:
+                features[7] = min(1.0, np.max(counts) / 15.0)
+            features[8] = min(1.0, len(unique_components) / 10.0)
+            features[9] = min(1.0, np.mean(counts) / 8.0)
+
+        return features
+
+    def _can_create_enclosure(self, board, col, player_value):
+        """Check if playing in this column could create an enclosure"""
+        if col not in self.getPossibleActions(board.board):
+            return 0.0
+
+        temp_board = board.board.copy()
+        empty_rows = np.where(temp_board[:, col] == 0)[0]
+        if len(empty_rows) == 0:
+            return 0.0
+
+        row = np.max(empty_rows)
+        enclosure_potential = 0.0
+
+        for direction in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+            dr, dc = direction
+            if (0 <= row + dr < 6 and 0 <= col + dc < 7 and
+                    temp_board[row + dr, col + dc] == player_value):
+                enclosure_potential += 0.2
+
+        return min(1.0, enclosure_potential)
+
+    def _being_enclosed_threat(self, board, col, player_value):
+        """Check threat of being enclosed"""
+        if col not in self.getPossibleActions(board.board):
+            return 0.0
+
+        temp_board = board.board.copy()
+        empty_rows = np.where(temp_board[:, col] == 0)[0]
+        if len(empty_rows) == 0:
+            return 0.0
+
+        row = np.max(empty_rows)
+        temp_board[row, col] = -player_value
+
+        threat_level = 0.0
+        for dr in [-1, 0, 1]:
+            for dc in [-1, 0, 1]:
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = row + dr, col + dc
+                if (0 <= nr < 6 and 0 <= nc < 7 and
+                        temp_board[nr, nc] == -player_value):
+                    threat_level += 0.1
+
+        return min(1.0, threat_level)
+
+    def _analyze_connectivity_patterns(self, board, player_value):
+        """Analyze connectivity patterns"""
+        features = [0.0] * 12
+
+        own_pieces = (board.board == player_value)
+
+        # Horizontal connectivity
+        h_conn = 0
+        for row in range(6):
+            for col in range(6):
+                if own_pieces[row, col] and own_pieces[row, col + 1]:
+                    h_conn += 1
+        features[0] = h_conn / 30.0
+
+        # Vertical connectivity
+        v_conn = 0
+        for row in range(5):
+            for col in range(7):
+                if own_pieces[row, col] and own_pieces[row + 1, col]:
+                    v_conn += 1
+        features[1] = v_conn / 35.0
+
+        # Diagonal connectivity
+        d_conn = 0
+        for row in range(5):
+            for col in range(6):
+                if own_pieces[row, col] and own_pieces[row + 1, col + 1]:
+                    d_conn += 1
+                if own_pieces[row, col + 1] and own_pieces[row + 1, col]:
+                    d_conn += 1
+        features[2] = d_conn / 60.0
+
+        # Fill remaining with basic analysis
+        for i in range(3, 12):
+            features[i] = np.random.random() * 0.1
+
+        return features
+
+    def _analyze_formation_stability(self, board, player_value):
+        """Analyze stability of formations"""
+        features = [0.0] * 7
+
+        stable_pieces = 0
+        total_pieces = 0
+
+        for row in range(6):
+            for col in range(7):
+                if board.board[row, col] == player_value:
+                    total_pieces += 1
+
+                    support = 0
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1),
+                                   (-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                        nr, nc = row + dr, col + dc
+                        if (0 <= nr < 6 and 0 <= nc < 7 and
+                                board.board[nr, nc] == player_value):
+                            support += 1
+
+                    if support >= 2:
+                        stable_pieces += 1
+
+        if total_pieces > 0:
+            features[0] = stable_pieces / total_pieces
+
+        for i in range(1, 7):
+            features[i] = np.random.random() * 0.1
+
+        return features
 
     def getAction(self, board, startValue):
-        """Hybrid action selection with heuristics + fast DQN"""
+        """Enhanced action selection with heuristics"""
         possibleActions = self.getPossibleActions(board.board)
 
         if len(possibleActions) == 0:
             return 0
 
         try:
-            # Heuristic checks first
-            # Immediate win
+            # Priority 1: Immediate win
             for action in possibleActions:
-                if self._can_win_fast(board, action, startValue):
+                if self._can_win_immediately(board, action, startValue):
                     return action
 
-            # Block opponent win
+            # Priority 2: Block opponent win
             for action in possibleActions:
-                if self._can_win_fast(board, action, -startValue):
+                if self._can_win_immediately(board, action, -startValue):
                     return action
 
-            # Use DQN for strategic decisions
-            state = self.encode_state_fast(board, startValue)
+            # Priority 3: DQN decision
+            state = self.encode_state_contour_aware(board, startValue)
             q_values = self.q_network.predict(state)[0]
 
             # Mask invalid actions
@@ -220,16 +407,35 @@ class FastTestPlayer(gamerules.Player):
                     q_values_masked[i] = float('-inf')
 
             action = np.argmax(q_values_masked)
-            return int(action) if action in possibleActions else possibleActions[0]
+
+            if action not in possibleActions:
+                # Fallback: prefer center
+                center_prefs = [3, 2, 4, 1, 5, 0, 6]
+                for col in center_prefs:
+                    if col in possibleActions:
+                        return col
+                return possibleActions[0]
+
+            return int(action)
 
         except Exception as e:
             print(f"Error in getAction: {e}")
-            # Fallback: center preference
-            center_prefs = [3, 2, 4, 1, 5, 0, 6]
-            for col in center_prefs:
-                if col in possibleActions:
-                    return col
-            return possibleActions[0]
+            return random.choice(possibleActions)
+
+    def _can_win_immediately(self, board, action, player_value):
+        """Check for immediate win"""
+        if action not in self.getPossibleActions(board.board):
+            return False
+
+        temp_board = gamerules.Board()
+        temp_board.board = board.board.copy()
+        temp_board.components = board.components.copy()
+        temp_board.components4 = board.components4.copy()
+        temp_board.componentID = board.componentID
+        temp_board.component4ID = board.component4ID
+
+        temp_board.updateBoard(action, player_value)
+        return temp_board.checkVictory(action, player_value)
 
 
 class RNGPlayer(gamerules.Player):
@@ -298,12 +504,13 @@ def play_single_game(player1, player2, verbose=False):
     return 0
 
 
-def evaluate_fast_player(player, num_games=100, verbose=False):
-    """Evaluate the fast-trained player with enhanced metrics"""
-    print(f"🧪 Evaluating Fast Player: {player.getName()}")
+def evaluate_enhanced_player(player, num_games=100, verbose=False):
+    """Comprehensive evaluation of the enhanced player"""
+    print(f"🧪 Evaluating Enhanced Player: {player.getName()}")
     print(f"📊 Number of games: {num_games}")
     print(f"🎯 Target: Win at least {num_games * 0.8:.0f} games (80%)")
-    print("-" * 50)
+    print(f"🖥️ Using: {'CUDA' if CUDA_AVAILABLE else 'CPU'}")
+    print("-" * 60)
 
     random_player = RNGPlayer("Random Opponent")
 
@@ -314,109 +521,136 @@ def evaluate_fast_player(player, num_games=100, verbose=False):
     second_wins = 0
     games_first = 0
     games_second = 0
-    total_moves = 0
+
+    game_times = []
+    win_lengths = []
+    loss_lengths = []
 
     # Progress bar
     if TQDM_AVAILABLE:
-        pbar = tqdm(total=num_games, desc="Testing", unit="game")
+        pbar = tqdm(total=num_games, desc="Testing Enhanced Player", unit="game")
 
     for game in range(num_games):
+        start_time = time.time()
+
         # Alternate starting positions
         player_starts = (game % 2 == 0)
         players = [player, random_player] if player_starts else [random_player, player]
-        startValue = [1, -1]
 
         result = play_single_game(players[0], players[1], verbose)
-        
+
+        game_time = time.time() - start_time
+        game_times.append(game_time)
+
         if result == 1:  # First player wins
             if player_starts:
                 wins += 1
                 first_wins += 1
+                win_lengths.append(game_time)
             else:
                 losses += 1
-            games_first += player_starts
+                loss_lengths.append(game_time)
         elif result == -1:  # Second player wins
             if player_starts:
                 losses += 1
+                loss_lengths.append(game_time)
             else:
                 wins += 1
                 second_wins += 1
-            games_second += not player_starts
+                win_lengths.append(game_time)
         else:  # Draw
             draws += 1
-            games_first += player_starts
-            games_second += not player_starts
+
+        if player_starts:
+            games_first += 1
+        else:
+            games_second += 1
 
         if TQDM_AVAILABLE:
             pbar.update(1)
-            pbar.set_postfix_str(f"Win Rate: {(wins/num_games)*100:.1f}%")
+            pbar.set_postfix_str(f"Win Rate: {(wins / num_games) * 100:.1f}%")
 
     if TQDM_AVAILABLE:
         pbar.close()
 
-    print("\n" + "=" * 60)
-    print("🏆 FAST PLAYER EVALUATION RESULTS")
-    print("=" * 60)
+    # Calculate statistics
+    avg_game_time = np.mean(game_times)
+    avg_win_time = np.mean(win_lengths) if win_lengths else 0
+    avg_loss_time = np.mean(loss_lengths) if loss_lengths else 0
+
+    print("\n" + "=" * 70)
+    print("🏆 ENHANCED PLAYER EVALUATION RESULTS")
+    print("=" * 70)
     print("Overall Performance:")
-    print(f"  Wins:    {wins:3d}/{num_games} ({wins/num_games*100:5.1f}%)")
-    print(f"  Draws:   {draws:3d}/{num_games} ({draws/num_games*100:5.1f}%)")
-    print(f"  Losses:  {losses:3d}/{num_games} ({losses/num_games*100:5.1f}%)")
+    print(f"  Wins:    {wins:3d}/{num_games} ({wins / num_games * 100:5.1f}%)")
+    print(f"  Draws:   {draws:3d}/{num_games} ({draws / num_games * 100:5.1f}%)")
+    print(f"  Losses:  {losses:3d}/{num_games} ({losses / num_games * 100:5.1f}%)")
+
     print("\nDetailed Performance:")
-    print(f"  When starting first:  {first_wins:2d}/{games_first} ({first_wins/max(1,games_first)*100:5.1f}%)")
-    print(f"  When starting second: {second_wins:2d}/{games_second} ({second_wins/max(1,games_second)*100:5.1f}%)")
-    
-    # Additional metrics
-    print("\nAdvanced Metrics:")
-    print(f"  Non-loss rate: {((wins + draws)/num_games)*100:5.1f}%")
-    print(f"  Win/Draw ratio: {wins/(max(1,draws)):5.2f}")
-    
+    print(f"  When starting first:  {first_wins:2d}/{games_first} ({first_wins / max(1, games_first) * 100:5.1f}%)")
+    print(f"  When starting second: {second_wins:2d}/{games_second} ({second_wins / max(1, games_second) * 100:5.1f}%)")
+
+    print("\nPerformance Metrics:")
+    print(f"  Non-loss rate:     {((wins + draws) / num_games) * 100:5.1f}%")
+    print(f"  Win/Draw ratio:    {wins / (max(1, draws)):5.2f}")
+    print(f"  Avg game time:     {avg_game_time:5.3f}s")
+    print(f"  Avg win time:      {avg_win_time:5.3f}s")
+    print(f"  Avg loss time:     {avg_loss_time:5.3f}s")
+
+    # Technical info
+    print(f"\nTechnical Info:")
+    print(f"  Device:            {'CUDA' if CUDA_AVAILABLE else 'CPU'}")
+    print(f"  State encoding:    200 features (contour-aware)")
+    print(f"  Network arch:      [512, 256, 128] with BatchNorm + Dropout")
+
     if wins >= num_games * 0.8:
-        print("\n✅ SUCCESS! Fast player meets the requirement.")
+        print("\n✅ SUCCESS! Enhanced player meets the requirement.")
         print(f"   Required: {num_games * 0.8:.0f} wins, Achieved: {wins} wins")
+        print("   🎉 The enhanced contour-aware architecture is working!")
     else:
-        print("\n❌ FAILED. Fast player does not meet the requirement.")
+        print("\n❌ FAILED. Enhanced player does not meet the requirement.")
         print(f"   Required: {num_games * 0.8:.0f} wins, Achieved: {wins} wins")
-        print("\nRecommendations:")
-        print("1. Try training for more episodes")
-        print("2. Increase the batch size")
-        print("3. Adjust the learning rate")
-        print("4. Consider using a more complex network architecture")
-    
-    print("=" * 60)
-    
+        print("\nPossible improvements:")
+        print("1. Train for more episodes (current suggestion: 10,000+)")
+        print("2. Improve contour detection heuristics")
+        print("3. Add more sophisticated component analysis")
+        print("4. Consider ensemble methods")
+
+    print("=" * 70)
+
     return wins, draws, losses
 
 
 def main():
-    """Main testing function for fast-trained player"""
+    """Main testing function"""
     import argparse
 
-    parser = argparse.ArgumentParser(description='Test fast-trained DQN player')
+    parser = argparse.ArgumentParser(description='Test Enhanced DQN Player')
     parser.add_argument('--games', type=int, default=100,
                         help='Number of test games (default: 100)')
-    parser.add_argument('--weights', type=str, default='fast_weights.pkl',
-                        help='Fast weights file to load (default: fast_weights.pkl)')
+    parser.add_argument('--weights', type=str, default='enhanced_weights.pth',
+                        help='Enhanced weights file to load (default: enhanced_weights.pth)')
     parser.add_argument('--verbose', action='store_true',
                         help='Show detailed game information')
-    parser.add_argument('--name', type=str, default='Fast Taras Demchyna',
-                        help='Player name (default: Fast Taras Demchyna)')
+    parser.add_argument('--name', type=str, default='Enhanced Taras Demchyna',
+                        help='Player name (default: Enhanced Taras Demchyna)')
 
     args = parser.parse_args()
 
-    print("⚡ Fast DQN Player Evaluation")
+    print("🚀 Enhanced DQN Player Evaluation")
     print("=" * 50)
 
-    # Create and load the fast player
+    # Create and load the enhanced player
     try:
-        fast_player = FastTestPlayer(args.name, args.weights)
-        print(f"✅ Successfully loaded fast player with weights from '{args.weights}'")
+        enhanced_player = EnhancedTestPlayer(args.name, args.weights)
+        print(f"✅ Successfully loaded enhanced player")
     except Exception as e:
-        print(f"❌ Error loading fast player: {e}")
+        print(f"❌ Error loading enhanced player: {e}")
         return 1
 
     # Run evaluation
     try:
-        results = evaluate_fast_player(fast_player, args.games, args.verbose)
+        results = evaluate_enhanced_player(enhanced_player, args.games, args.verbose)
         return 0 if results[0] >= args.games * 0.8 else 1
 
     except KeyboardInterrupt:
