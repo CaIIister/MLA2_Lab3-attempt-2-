@@ -163,11 +163,12 @@ class QLearningTrainer:
             if game_experiences:
                 # Assign rewards
                 if winner == 1:  # Agent won
-                    base_reward = 1000  # Very high reward for winning
+                    moves_factor = max(0.5, 1.0 - (move_count / 42))  # Higher reward for quick wins
+                    base_reward = 3000 * moves_factor  # Huge reward for winning, scaled by game length
                 elif winner == -1:  # Agent lost
-                    base_reward = -500  # Strong penalty for losing
+                    base_reward = -1500  # Severe penalty for losing
                 else:  # Draw
-                    base_reward = -200  # Heavy penalty for draws to encourage decisive play
+                    base_reward = -800  # Very heavy penalty for draws
 
                 for i, (state, action, prev_board, player_value) in enumerate(game_experiences):
                     try:
@@ -187,20 +188,17 @@ class QLearningTrainer:
                             next_state, _, next_board, _ = game_experiences[i + 1]
                             
                             # Get feature scores for current and next state
-                            current_contour = sum(1 for col in range(7) if agent._evaluate_contour_formation(prev_board.board, col, player_value) >= 2)
-                            next_contour = sum(1 for col in range(7) if agent._evaluate_contour_formation(next_board.board, col, player_value) >= 2)
+                            current_pattern = sum(1 for col in range(7) if agent._evaluate_winning_pattern(prev_board.board, col, player_value) >= 4)
+                            next_pattern = sum(1 for col in range(7) if agent._evaluate_winning_pattern(next_board.board, col, player_value) >= 4)
                             
-                            current_vulnerable = sum(1 for col in range(7) if agent._evaluate_opponent_vulnerability(prev_board.board, col, player_value) >= 2)
-                            next_vulnerable = sum(1 for col in range(7) if agent._evaluate_opponent_vulnerability(next_board.board, col, player_value) >= 2)
-                            
-                            current_escape = sum(1 for col in range(7) if agent._evaluate_escape_routes(prev_board.board, col, player_value) >= 2)
-                            next_escape = sum(1 for col in range(7) if agent._evaluate_escape_routes(next_board.board, col, player_value) >= 2)
+                            current_urgency = sum(1 for col in range(7) if agent._evaluate_move_urgency(prev_board.board, col, player_value) >= 3)
+                            next_urgency = sum(1 for col in range(7) if agent._evaluate_move_urgency(next_board.board, col, player_value) >= 3)
                             
                             # Reward improvements in position
-                            if next_contour > current_contour and next_vulnerable > current_vulnerable:
-                                final_reward = base_reward * reward_mult + 50  # Big bonus for improving position
-                            elif next_escape > current_escape:
-                                final_reward = base_reward * reward_mult + 20  # Smaller bonus for maintaining escape routes
+                            if next_pattern > current_pattern:
+                                final_reward = base_reward * reward_mult + 200  # Big bonus for forming winning patterns
+                            elif next_urgency > current_urgency:
+                                final_reward = base_reward * reward_mult + 100  # Bonus for addressing urgent threats
                             else:
                                 final_reward = base_reward * reward_mult
                         else:
@@ -220,8 +218,8 @@ class QLearningTrainer:
         """Train the Q-learning agent"""
         agent = Player("QLearning Agent")
         agent.epsilon = 1.0  # Start with pure exploration
-        agent.learning_rate = 0.4  # Moderate learning rate
-        agent.discount_factor = 0.9  # Balance immediate and future rewards
+        agent.learning_rate = 0.6  # Very aggressive learning
+        agent.discount_factor = 0.7  # Focus heavily on immediate rewards
 
         print(f"Starting training for {training_minutes} minutes...")
         print("=" * 60)
@@ -287,12 +285,12 @@ class QLearningTrainer:
                         draws += 1
 
                 # Exploration strategy
-                if total_games < 200:  # Initial phase
-                    agent.epsilon = max(0.6, agent.epsilon * 0.99)  # Quick initial decay
-                elif total_games < 500:  # Middle phase
-                    agent.epsilon = max(0.3, agent.epsilon * 0.995)  # Moderate decay
+                if total_games < 100:  # Initial phase
+                    agent.epsilon = max(0.4, agent.epsilon * 0.97)  # Very quick initial decay
+                elif total_games < 300:  # Middle phase
+                    agent.epsilon = max(0.2, agent.epsilon * 0.98)  # Quick decay
                 else:  # Late phase
-                    agent.epsilon = max(0.1, agent.epsilon * 0.999)  # Very slow decay
+                    agent.epsilon = max(0.1, agent.epsilon * 0.999)  # Maintain some exploration
 
                 # Update progress bar description with current stats
                 if total_games > 0:
