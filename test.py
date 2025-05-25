@@ -32,7 +32,7 @@ except ImportError:
 class EnhancedDQN(nn.Module):
     """Enhanced DQN (same as in training script)"""
 
-    def __init__(self, input_size=200, hidden_sizes=[512, 256, 128], output_size=7,
+    def __init__(self, input_size=193, hidden_sizes=[512, 256, 128], output_size=7,
                  learning_rate=0.0005, dropout_rate=0.3):
         super(EnhancedDQN, self).__init__()
 

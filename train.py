@@ -48,7 +48,7 @@ except ImportError:
 class EnhancedDQN(nn.Module):
     """Enhanced DQN with CUDA support and improved architecture for contour game"""
 
-    def __init__(self, input_size=200, hidden_sizes=[512, 256, 128], output_size=7,
+    def __init__(self, input_size=193, hidden_sizes=[512, 256, 128], output_size=7,
                  learning_rate=0.0005, dropout_rate=0.3):
         super(EnhancedDQN, self).__init__()
 
@@ -186,7 +186,7 @@ class ContourGamePlayer(gamerules.Player):
 
         # Enhanced Q-network
         self.q_network = EnhancedDQN(
-            input_size=200,  # Full feature set
+            input_size=193,  # Full feature set
             hidden_sizes=[512, 256, 128],  # Larger network
             output_size=7,
             learning_rate=0.0005,  # Conservative learning rate
@@ -206,7 +206,7 @@ class ContourGamePlayer(gamerules.Player):
             dummy_features = self.encode_state_contour_aware(dummy_board, 1)
             feature_count = len(dummy_features)
             print(f"✅ Feature encoding verified: {feature_count} features")
-            if feature_count != 200:
+            if feature_count != 193:
                 print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
         except Exception as e:
             print(f"⚠️ Feature encoding test failed: {e}")
