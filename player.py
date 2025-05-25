@@ -26,7 +26,7 @@ class Player(BasePlayer):
                 self.q_table = {}
 
     def extract_features(self, board, player_value):
-        """Extract features focused on contour completion and prevention"""
+        """Extract features focused on aggressive pattern formation"""
         features = []
         
         # 1. Check for immediate wins/blocks (14 features)
@@ -35,122 +35,126 @@ class Player(BasePlayer):
             must_block = self._test_capture_move(board, col, -player_value)
             features.extend([1 if can_win else 0, 1 if must_block else 0])
 
-        # 2. Contour progress (7 features)
+        # 2. Pattern strength (7 features)
         for col in range(7):
-            contour_score = self._evaluate_contour_progress(board, col, player_value)
-            features.append(contour_score)
+            pattern_score = self._evaluate_pattern_strength(board, col, player_value)
+            features.append(pattern_score)
 
-        # 3. Opponent contour prevention (7 features)
+        # 3. Piece density (7 features)
         for col in range(7):
-            prevention_score = self._evaluate_contour_prevention(board, col, player_value)
-            features.append(prevention_score)
+            density_score = self._evaluate_piece_density(board, col, player_value)
+            features.append(density_score)
 
-        # 4. Board control (7 features)
+        # 4. Position value (7 features)
         for col in range(7):
-            control_score = self._evaluate_board_control(board, col, player_value)
-            features.append(control_score)
+            position_score = self._evaluate_position_value(board, col, player_value)
+            features.append(position_score)
         
         return tuple(features)
 
-    def _evaluate_contour_progress(self, board, col, player_value):
-        """Evaluate progress towards completing a contour"""
+    def _evaluate_pattern_strength(self, board, col, player_value):
+        """Evaluate strength of potential winning patterns"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            # Check for potential contours in all directions
-            directions = [(0,1), (1,1), (1,0), (1,-1)]
-            max_score = 0
+            # Key winning patterns
+            patterns = [
+                [(0,1), (1,0)],      # L corner
+                [(0,-1), (1,0)],     # L corner
+                [(1,1), (1,-1)],     # V shape
+                [(0,1), (0,2)],      # Horizontal
+                [(1,0), (2,0)]       # Vertical
+            ]
             
-            for dr, dc in directions:
-                # Look in both directions from the move
+            max_score = 0
+            for pattern in patterns:
+                score = 0
+                opponent_trapped = False
                 our_pieces = 0
-                opponent_pieces = 0
-                gaps = 0
                 
-                for mult in [-1, 1]:  # Check both directions
-                    r, c = landing_row + dr * mult, col + dc * mult
-                    steps = 0
-                    while 0 <= r < 6 and 0 <= c < 7 and steps < 3:
+                # Check if we have pieces forming the pattern
+                for dr, dc in pattern:
+                    r, c = landing_row + dr, col + dc
+                    if 0 <= r < 6 and 0 <= c < 7:
                         if board[r,c] == player_value:
                             our_pieces += 1
-                        elif board[r,c] == -player_value:
-                            opponent_pieces += 1
-                        else:
-                            gaps += 1
-                        r += dr * mult
-                        c += dc * mult
-                        steps += 1
+                            score += 2
+                        elif board[r,c] == 0:
+                            score += 1
                 
-                # Score based on pieces and gaps
-                if opponent_pieces > 0 and gaps <= 2:
-                    score = our_pieces * 2 + (2 - gaps)
-                    max_score = max(max_score, score)
+                # Check if opponent piece could be trapped
+                for r in range(max(0, landing_row-1), min(6, landing_row+2)):
+                    for c in range(max(0, col-1), min(7, col+2)):
+                        if board[r,c] == -player_value:
+                            opponent_trapped = True
+                            break
+                            
+                if opponent_trapped and our_pieces >= 1:
+                    score *= 2
                     
+                max_score = max(max_score, score)
+                
             return max_score
         except Exception:
             return 0
 
-    def _evaluate_contour_prevention(self, board, col, player_value):
-        """Evaluate how well move prevents opponent contours"""
+    def _evaluate_piece_density(self, board, col, player_value):
+        """Evaluate piece density and potential for captures"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            prevention_score = 0
-            directions = [(0,1), (1,1), (1,0), (1,-1)]
+            density = 0
+            opponent_pieces = 0
+            our_pieces = 0
             
-            for dr, dc in directions:
-                # Check if this move blocks a potential opponent contour
-                opponent_pieces = 0
-                our_blocking_pieces = 0
+            # Check 5x5 area centered on move
+            for r in range(max(0, landing_row-2), min(6, landing_row+3)):
+                for c in range(max(0, col-2), min(7, col+3)):
+                    if board[r,c] == player_value:
+                        our_pieces += 1
+                    elif board[r,c] == -player_value:
+                        opponent_pieces += 1
+                        
+            # High density of our pieces with some opponent pieces is good
+            if opponent_pieces > 0:
+                density = our_pieces * 2
                 
-                for mult in [-1, 1]:
-                    r, c = landing_row + dr * mult, col + dc * mult
-                    steps = 0
-                    while 0 <= r < 6 and 0 <= c < 7 and steps < 3:
-                        if board[r,c] == -player_value:
-                            opponent_pieces += 1
-                        elif board[r,c] == player_value:
-                            our_blocking_pieces += 1
-                        r += dr * mult
-                        c += dc * mult
-                        steps += 1
+            # Extra points for having more pieces than opponent
+            if our_pieces > opponent_pieces:
+                density += 2
                 
-                if opponent_pieces >= 2:
-                    prevention_score += opponent_pieces + our_blocking_pieces
-                    
-            return prevention_score
+            return density
         except Exception:
             return 0
 
-    def _evaluate_board_control(self, board, col, player_value):
-        """Evaluate board control and piece positioning"""
+    def _evaluate_position_value(self, board, col, player_value):
+        """Evaluate strategic value of position"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            control_score = 0
+            value = 0
             
-            # Prefer center columns early game
+            # Strong preference for center columns early game
             if sum(1 for c in range(7) if board[5,c] == 0) >= 5:
                 center_dist = abs(col - 3)
-                control_score += (3 - center_dist) * 2
+                value += (4 - center_dist) * 3
                 
-            # Check surrounding area for good position
-            for r in range(max(0, landing_row - 1), min(6, landing_row + 2)):
-                for c in range(max(0, col - 1), min(7, col + 2)):
+            # Value moves that build on existing pieces
+            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
+                r, c = landing_row + dr, col + dc
+                if 0 <= r < 6 and 0 <= c < 7:
                     if board[r,c] == player_value:
-                        # Connected pieces are good
-                        control_score += 1
+                        value += 2
                     elif board[r,c] == -player_value:
-                        # Being next to opponent pieces is good (for potential captures)
-                        control_score += 2
+                        value += 1  # Being next to opponent pieces can be good
                         
-            return control_score
+            return value
         except Exception:
             return 0
 
@@ -205,7 +209,7 @@ class Player(BasePlayer):
             print(f"Q-update error: {e}")
 
     def select_action(self, state, possible_actions):
-        """Select action with focus on contour completion"""
+        """Select action with aggressive pattern formation"""
         try:
             # First, check for immediate wins
             for action in possible_actions:
@@ -219,15 +223,15 @@ class Player(BasePlayer):
 
             # Use Q-learning with epsilon-greedy
             if np.random.random() < self.epsilon:
-                # During exploration, prefer moves that could form contours
-                scores = [state[14 + action] + state[21 + action] for action in possible_actions]
-                total_score = sum(scores)
+                # During exploration, prefer strong patterns and center
+                pattern_scores = [state[14 + action] * 2 + state[28 + action] for action in possible_actions]
+                total_score = sum(pattern_scores)
                 if total_score > 0:
-                    probs = np.array(scores) / total_score
+                    probs = np.array(pattern_scores) / total_score
                     return np.random.choice(possible_actions, p=probs)
                 else:
-                    # If no good contour moves, prefer center
-                    weights = [3, 4, 5, 7, 5, 4, 3]
+                    # If no good patterns, prefer center
+                    weights = [4, 5, 6, 8, 6, 5, 4]
                     probs = [weights[a] for a in possible_actions]
                     probs = np.array(probs) / sum(probs)
                     return np.random.choice(possible_actions, p=probs)
@@ -235,12 +239,12 @@ class Player(BasePlayer):
             # Get Q-values for all possible actions
             q_values = [self.get_q_value(state, action) for action in possible_actions]
             
-            # If Q-values are similar, use contour heuristics
+            # If Q-values are similar, use pattern strength
             if max(q_values) - min(q_values) < 0.1:
-                contour_scores = [state[14 + action] + state[21 + action] for action in possible_actions]
-                best_score = max(contour_scores)
-                best_actions = [action for action, score in zip(possible_actions, contour_scores) 
-                              if score == best_score]
+                pattern_scores = [state[14 + action] * 2 + state[28 + action] for action in possible_actions]
+                best_score = max(pattern_scores)
+                best_actions = [action for action, score in zip(possible_actions, pattern_scores) 
+                              if score >= best_score - 1]  # Allow small variations
                 return np.random.choice(best_actions)
             
             # Otherwise choose best Q-value
