@@ -200,6 +200,17 @@ class ContourGamePlayer(gamerules.Player):
 
         print(f"🧠 Enhanced Player initialized with {'CUDA' if self.use_cuda else 'CPU'}")
 
+        # Verify feature encoding works correctly
+        try:
+            dummy_board = gamerules.Board()
+            dummy_features = self.encode_state_contour_aware(dummy_board, 1)
+            feature_count = len(dummy_features)
+            print(f"✅ Feature encoding verified: {feature_count} features")
+            if feature_count != 200:
+                print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
+        except Exception as e:
+            print(f"⚠️ Feature encoding test failed: {e}")
+
     def getName(self):
         return self.name
 

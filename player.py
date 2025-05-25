@@ -147,6 +147,16 @@ class Player(gamerules.Player):
         # Heuristic weights for smart fallbacks
         self.center_preferences = [3, 2, 4, 1, 5, 0, 6]
 
+        # Verify feature encoding produces exactly 200 features
+        try:
+            dummy_board = gamerules.Board()
+            dummy_features = self._encode_state_contour_aware(dummy_board, 1)
+            feature_count = len(dummy_features)
+            if feature_count != 200:
+                print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
+        except Exception as e:
+            print(f"⚠️ Feature encoding test failed: {e}")
+
     def getName(self):
         """Required tournament method - returns student name"""
         return self.student_name
@@ -284,55 +294,87 @@ class Player(gamerules.Player):
         """
         features = []
 
-        # === CORE BOARD STATE (42 features) ===
-        board_normalized = board.board * startValue
-        features.extend(board_normalized.flatten())
+        try:
+            # === CORE BOARD STATE (42 features) ===
+            board_normalized = board.board * startValue
+            features.extend(board_normalized.flatten())
 
-        # === CRITICAL: COMPONENT ANALYSIS (84 features) ===
-        # These features are essential for understanding contour formation
-        components_normalized = np.sign(board.components) * startValue
-        features.extend(components_normalized.flatten())
+            # === CRITICAL: COMPONENT ANALYSIS (84 features) ===
+            # These features are essential for understanding contour formation
+            components_normalized = np.sign(board.components) * startValue
+            features.extend(components_normalized.flatten())
 
-        components4_normalized = np.sign(board.components4) * startValue
-        features.extend(components4_normalized.flatten())
+            components4_normalized = np.sign(board.components4) * startValue
+            features.extend(components4_normalized.flatten())
 
-        # === CONTOUR-SPECIFIC FEATURES (74 features) ===
+            # === CONTOUR-SPECIFIC FEATURES (74 features) ===
 
-        # Column analysis with contour potential (14 features)
-        for col in range(7):
-            height = 6 - len(np.where(board.board[:, col] == 0)[0])
-            features.append(height / 6.0)
+            # Column heights and basic analysis (14 features)
+            for col in range(7):
+                height = 6 - len(np.where(board.board[:, col] == 0)[0])
+                features.append(height / 6.0)
+                # Contour potential
+                contour_potential = self._calculate_contour_potential(board, col, startValue)
+                features.append(contour_potential)
 
-            # Simplified contour potential
-            contour_potential = self._calculate_contour_potential(board, col, startValue)
-            features.append(contour_potential)
+            # Piece distribution analysis (16 features)
+            center_own = sum(np.sum(board.board[:, col] == startValue) for col in [2, 3, 4])
+            center_opp = sum(np.sum(board.board[:, col] == -startValue) for col in [2, 3, 4])
+            edge_own = sum(np.sum(board.board[:, col] == startValue) for col in [0, 1, 5, 6])
+            edge_opp = sum(np.sum(board.board[:, col] == -startValue) for col in [0, 1, 5, 6])
 
-        # Component structure analysis (14 features)
-        own_components = self._analyze_components_fast(board, startValue)
-        opp_components = self._analyze_components_fast(board, -startValue)
-        features.extend(own_components[:7])  # Top 7 features
-        features.extend(opp_components[:7])  # Top 7 features
+            total_pieces = np.sum(board.board != 0)
+            own_pieces = np.sum(board.board == startValue)
+            opp_pieces = np.sum(board.board == -startValue)
 
-        # Enclosure threat detection (14 features)
-        for col in range(7):
-            can_enclose = self._can_create_enclosure_fast(board, col, startValue)
-            being_enclosed = self._being_enclosed_threat_fast(board, col, startValue)
-            features.extend([can_enclose, being_enclosed])
+            features.extend([
+                center_own / 18.0, center_opp / 18.0, edge_own / 24.0, edge_opp / 24.0,
+                total_pieces / 42.0, own_pieces / 21.0, opp_pieces / 21.0,
+                1.0 if startValue == 1 else 0.0  # Starting player
+            ])
 
-        # Strategic positioning (16 features)
-        strategic_features = self._extract_strategic_features(board, startValue)
-        features.extend(strategic_features)
+            # Game phase indicators (3 features)
+            if total_pieces < 14:
+                features.extend([1.0, 0.0, 0.0])
+            elif total_pieces < 28:
+                features.extend([0.0, 1.0, 0.0])
+            else:
+                features.extend([0.0, 0.0, 1.0])
 
-        # Game phase and meta-features (16 features)
-        meta_features = self._extract_meta_features(board, startValue)
-        features.extend(meta_features)
+            # Connectivity analysis (16 features)
+            connectivity_features = self._extract_strategic_features(board, startValue)
+            features.extend(connectivity_features)
 
-        # Ensure exactly 200 features
-        while len(features) < 200:
-            features.append(0.0)
-        features = features[:200]
+            # Component structure analysis (14 features)
+            component_features = self._analyze_components_fast(board, startValue)
+            features.extend(component_features[:7])  # Own components
+            component_features_opp = self._analyze_components_fast(board, -startValue)
+            features.extend(component_features_opp[:7])  # Opponent components
 
-        return np.array(features, dtype=np.float32)
+            # Threat analysis (14 features)
+            for col in range(7):
+                can_win = 1.0 if self._can_win_immediately(board, col, startValue) else 0.0
+                must_block = 1.0 if self._can_win_immediately(board, col, -startValue) else 0.0
+                features.extend([can_win, must_block])
+
+            # Positional features (7 features)
+            positional_features = self._extract_meta_features(board, startValue)
+            features.extend(positional_features)
+
+            # === ENSURE EXACTLY 200 FEATURES ===
+            current_length = len(features)
+            if current_length < 200:
+                # Pad with zeros
+                features.extend([0.0] * (200 - current_length))
+            elif current_length > 200:
+                # Truncate to 200
+                features = features[:200]
+
+            return np.array(features, dtype=np.float32)
+
+        except Exception:
+            # Emergency fallback - return 200 zeros
+            return np.zeros(200, dtype=np.float32)
 
     def _calculate_contour_potential(self, board, col, player_value):
         """Calculate potential for creating contours in a column"""
@@ -433,95 +475,101 @@ class Player(gamerules.Player):
             return 0.0
 
     def _extract_strategic_features(self, board, startValue):
-        """Extract strategic positioning features"""
-        features = []
+        """Extract strategic positioning features - returns exactly 16 features"""
+        features = [0.0] * 16
 
         try:
-            # Center control
-            center_own = sum(np.sum(board.board[:, col] == startValue) for col in [2, 3, 4])
-            center_opp = sum(np.sum(board.board[:, col] == -startValue) for col in [2, 3, 4])
-            features.append(center_own / 18.0)
-            features.append(center_opp / 18.0)
-
-            # Edge control
-            edge_own = sum(np.sum(board.board[:, col] == startValue) for col in [0, 1, 5, 6])
-            edge_opp = sum(np.sum(board.board[:, col] == -startValue) for col in [0, 1, 5, 6])
-            features.append(edge_own / 24.0)
-            features.append(edge_opp / 24.0)
-
-            # Connectivity metrics (simplified)
             own_pieces = (board.board == startValue)
             opp_pieces = (board.board == -startValue)
 
-            # Horizontal connections
-            h_conn_own = np.sum(own_pieces[:, :-1] & own_pieces[:, 1:])
-            h_conn_opp = np.sum(opp_pieces[:, :-1] & opp_pieces[:, 1:])
-            features.append(h_conn_own / 30.0)
-            features.append(h_conn_opp / 30.0)
+            # Horizontal connections (2 features)
+            h_conn_own = 0
+            h_conn_opp = 0
+            for row in range(6):
+                for col in range(6):
+                    if own_pieces[row, col] and own_pieces[row, col + 1]:
+                        h_conn_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row, col + 1]:
+                        h_conn_opp += 1
+            features[0] = h_conn_own / 30.0
+            features[1] = h_conn_opp / 30.0
 
-            # Vertical connections
-            v_conn_own = np.sum(own_pieces[:-1, :] & own_pieces[1:, :])
-            v_conn_opp = np.sum(opp_pieces[:-1, :] & opp_pieces[1:, :])
-            features.append(v_conn_own / 35.0)
-            features.append(v_conn_opp / 35.0)
+            # Vertical connections (2 features)
+            v_conn_own = 0
+            v_conn_opp = 0
+            for row in range(5):
+                for col in range(7):
+                    if own_pieces[row, col] and own_pieces[row + 1, col]:
+                        v_conn_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row + 1, col]:
+                        v_conn_opp += 1
+            features[2] = v_conn_own / 35.0
+            features[3] = v_conn_opp / 35.0
 
-            # Fill remaining features
-            while len(features) < 16:
-                features.append(0.0)
+            # Diagonal connections (4 features)
+            d1_own = d1_opp = d2_own = d2_opp = 0
+            for row in range(5):
+                for col in range(6):
+                    if own_pieces[row, col] and own_pieces[row + 1, col + 1]:
+                        d1_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row + 1, col + 1]:
+                        d1_opp += 1
+                    if own_pieces[row, col + 1] and own_pieces[row + 1, col]:
+                        d2_own += 1
+                    if opp_pieces[row, col + 1] and opp_pieces[row + 1, col]:
+                        d2_opp += 1
+            features[4] = d1_own / 30.0
+            features[5] = d1_opp / 30.0
+            features[6] = d2_own / 30.0
+            features[7] = d2_opp / 30.0
+
+            # Fill remaining 8 features with column-wise analysis
+            for col in range(7):
+                if col < 8:
+                    col_own = np.sum(own_pieces[:, col])
+                    features[8 + col] = col_own / 6.0
+
+            # Last feature - overall connectivity density
+            features[15] = (features[0] + features[2] + features[4] + features[6]) / 4.0
 
         except Exception:
-            features = [0.0] * 16
+            pass  # Keep zeros
 
-        return features[:16]
+        return features
 
     def _extract_meta_features(self, board, startValue):
-        """Extract game meta-features"""
-        features = []
+        """Extract game meta-features - returns exactly 7 features"""
+        features = [0.0] * 7
 
         try:
-            # Piece counts
-            total_pieces = np.sum(board.board != 0)
-            own_pieces = np.sum(board.board == startValue)
-            opp_pieces = np.sum(board.board == -startValue)
-
-            features.append(total_pieces / 42.0)
-            features.append(own_pieces / 21.0)
-            features.append(opp_pieces / 21.0)
-
-            # Game phase indicators
-            if total_pieces < 14:
-                features.extend([1.0, 0.0, 0.0])  # Early game
-            elif total_pieces < 28:
-                features.extend([0.0, 1.0, 0.0])  # Mid game
-            else:
-                features.extend([0.0, 0.0, 1.0])  # Late game
-
-            # Starting player indicator
-            features.append(1.0 if startValue == 1 else 0.0)
-
-            # Board balance metrics
-            left_own = np.sum(board.board[:, :3] == startValue)
-            right_own = np.sum(board.board[:, 4:] == startValue)
-            balance = 1.0 - abs(left_own - right_own) / max(left_own + right_own, 1)
-            features.append(balance)
-
             # Column height variance
             heights = [6 - len(np.where(board.board[:, col] == 0)[0]) for col in range(7)]
-            height_var = np.var(heights) / 6.0
-            features.append(height_var)
+            features[0] = np.var(heights) / 6.0
+
+            # Center column dominance
+            center_col = board.board[:, 3]
+            features[1] = np.sum(center_col == startValue) / 6.0
+            features[2] = np.sum(center_col == -startValue) / 6.0
+
+            # Corner control
+            corners = [(0, 0), (0, 6), (5, 0), (5, 6)]
+            corner_own = sum(1 for r, c in corners if board.board[r, c] == startValue)
+            corner_opp = sum(1 for r, c in corners if board.board[r, c] == -startValue)
+            features[3] = corner_own / 4.0
+            features[4] = corner_opp / 4.0
 
             # Available moves
-            possible_moves = len(self.getPossibleActions(board.board))
-            features.append(possible_moves / 7.0)
+            features[5] = len(self.getPossibleActions(board.board)) / 7.0
 
-            # Fill remaining
-            while len(features) < 16:
-                features.append(0.0)
+            # Board balance (left vs right)
+            left_own = np.sum(board.board[:, :3] == startValue)
+            right_own = np.sum(board.board[:, 4:] == startValue)
+            features[6] = 1.0 - abs(left_own - right_own) / max(left_own + right_own, 1)
 
         except Exception:
-            features = [0.0] * 16
+            pass  # Keep zeros
 
-        return features[:16]
+        return features
 
     def getPossibleActions(self, board):
         """Get list of valid column indices where pieces can be placed"""

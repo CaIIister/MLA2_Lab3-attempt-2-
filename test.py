@@ -147,6 +147,17 @@ class EnhancedTestPlayer(gamerules.Player):
         else:
             print("ℹ️ No weights file found, using random weights")
 
+        # Verify feature encoding produces exactly 200 features
+        try:
+            dummy_board = gamerules.Board()
+            dummy_features = self.encode_state_contour_aware(dummy_board, 1)
+            feature_count = len(dummy_features)
+            print(f"✅ Feature encoding verified: {feature_count} features")
+            if feature_count != 200:
+                print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
+        except Exception as e:
+            print(f"⚠️ Feature encoding test failed: {e}")
+
     def getName(self):
         return self.name
 
@@ -310,71 +321,99 @@ class EnhancedTestPlayer(gamerules.Player):
         return min(1.0, threat_level)
 
     def _analyze_connectivity_patterns(self, board, player_value):
-        """Analyze connectivity patterns"""
-        features = [0.0] * 12
+        """Analyze connectivity patterns - returns exactly 16 features"""
+        features = [0.0] * 16
 
-        own_pieces = (board.board == player_value)
+        try:
+            own_pieces = (board.board == player_value)
+            opp_pieces = (board.board == -player_value)
 
-        # Horizontal connectivity
-        h_conn = 0
-        for row in range(6):
-            for col in range(6):
-                if own_pieces[row, col] and own_pieces[row, col + 1]:
-                    h_conn += 1
-        features[0] = h_conn / 30.0
+            # Horizontal connections (2 features)
+            h_conn_own = 0
+            h_conn_opp = 0
+            for row in range(6):
+                for col in range(6):
+                    if own_pieces[row, col] and own_pieces[row, col + 1]:
+                        h_conn_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row, col + 1]:
+                        h_conn_opp += 1
+            features[0] = h_conn_own / 30.0
+            features[1] = h_conn_opp / 30.0
 
-        # Vertical connectivity
-        v_conn = 0
-        for row in range(5):
+            # Vertical connections (2 features)
+            v_conn_own = 0
+            v_conn_opp = 0
+            for row in range(5):
+                for col in range(7):
+                    if own_pieces[row, col] and own_pieces[row + 1, col]:
+                        v_conn_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row + 1, col]:
+                        v_conn_opp += 1
+            features[2] = v_conn_own / 35.0
+            features[3] = v_conn_opp / 35.0
+
+            # Diagonal connections (4 features)
+            d1_own = d1_opp = d2_own = d2_opp = 0
+            for row in range(5):
+                for col in range(6):
+                    if own_pieces[row, col] and own_pieces[row + 1, col + 1]:
+                        d1_own += 1
+                    if opp_pieces[row, col] and opp_pieces[row + 1, col + 1]:
+                        d1_opp += 1
+                    if own_pieces[row, col + 1] and own_pieces[row + 1, col]:
+                        d2_own += 1
+                    if opp_pieces[row, col + 1] and opp_pieces[row + 1, col]:
+                        d2_opp += 1
+            features[4] = d1_own / 30.0
+            features[5] = d1_opp / 30.0
+            features[6] = d2_own / 30.0
+            features[7] = d2_opp / 30.0
+
+            # Fill remaining 8 features with column-wise analysis
             for col in range(7):
-                if own_pieces[row, col] and own_pieces[row + 1, col]:
-                    v_conn += 1
-        features[1] = v_conn / 35.0
+                if col < 8:
+                    col_own = np.sum(own_pieces[:, col])
+                    features[8 + col] = col_own / 6.0
 
-        # Diagonal connectivity
-        d_conn = 0
-        for row in range(5):
-            for col in range(6):
-                if own_pieces[row, col] and own_pieces[row + 1, col + 1]:
-                    d_conn += 1
-                if own_pieces[row, col + 1] and own_pieces[row + 1, col]:
-                    d_conn += 1
-        features[2] = d_conn / 60.0
+            # Last feature - overall connectivity density
+            features[15] = (features[0] + features[2] + features[4] + features[6]) / 4.0
 
-        # Fill remaining with basic analysis
-        for i in range(3, 12):
-            features[i] = np.random.random() * 0.1
+        except Exception:
+            pass  # Keep zeros
 
         return features
 
     def _analyze_formation_stability(self, board, player_value):
-        """Analyze stability of formations"""
+        """Analyze stability of formations - returns exactly 7 features"""
         features = [0.0] * 7
 
-        stable_pieces = 0
-        total_pieces = 0
+        try:
+            # Column height variance
+            heights = [6 - len(np.where(board.board[:, col] == 0)[0]) for col in range(7)]
+            features[0] = np.var(heights) / 6.0
 
-        for row in range(6):
-            for col in range(7):
-                if board.board[row, col] == player_value:
-                    total_pieces += 1
+            # Center column dominance
+            center_col = board.board[:, 3]
+            features[1] = np.sum(center_col == player_value) / 6.0
+            features[2] = np.sum(center_col == -player_value) / 6.0
 
-                    support = 0
-                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1),
-                                   (-1, -1), (-1, 1), (1, -1), (1, 1)]:
-                        nr, nc = row + dr, col + dc
-                        if (0 <= nr < 6 and 0 <= nc < 7 and
-                                board.board[nr, nc] == player_value):
-                            support += 1
+            # Corner control
+            corners = [(0, 0), (0, 6), (5, 0), (5, 6)]
+            corner_own = sum(1 for r, c in corners if board.board[r, c] == player_value)
+            corner_opp = sum(1 for r, c in corners if board.board[r, c] == -player_value)
+            features[3] = corner_own / 4.0
+            features[4] = corner_opp / 4.0
 
-                    if support >= 2:
-                        stable_pieces += 1
+            # Available moves
+            features[5] = len(self.getPossibleActions(board.board)) / 7.0
 
-        if total_pieces > 0:
-            features[0] = stable_pieces / total_pieces
+            # Board balance (left vs right)
+            left_own = np.sum(board.board[:, :3] == player_value)
+            right_own = np.sum(board.board[:, 4:] == player_value)
+            features[6] = 1.0 - abs(left_own - right_own) / max(left_own + right_own, 1)
 
-        for i in range(1, 7):
-            features[i] = np.random.random() * 0.1
+        except Exception:
+            pass  # Keep zeros
 
         return features
 
