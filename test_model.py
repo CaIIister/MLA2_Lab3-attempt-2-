@@ -3,6 +3,7 @@ import copy
 import time
 import gamerules
 from player import Player
+from tqdm import tqdm
 
 
 class RNGPlayer(gamerules.Player):
@@ -44,79 +45,88 @@ def quick_test(num_games=20, show_games=False):
     print(f"\nTesting against random player ({num_games} games)...")
     start_time = time.time()
 
-    for game_num in range(num_games):
-        board = gamerules.Board()
+    # Progress bar for testing
+    with tqdm(total=num_games, desc="Quick Test",
+              bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
 
-        # Alternate starting player
-        if game_num % 2 == 0:
-            players = [agent, opponent]
-            start_values = {agent: 1, opponent: -1}
-            agent_starts = True
-        else:
-            players = [opponent, agent]
-            start_values = {opponent: 1, agent: -1}
-            agent_starts = False
+        for game_num in range(num_games):
+            board = gamerules.Board()
 
-        agent.newGame(True)
-        opponent.newGame(True)
+            # Alternate starting player
+            if game_num % 2 == 0:
+                players = [agent, opponent]
+                start_values = {agent: 1, opponent: -1}
+                agent_starts = True
+            else:
+                players = [opponent, agent]
+                start_values = {opponent: 1, agent: -1}
+                agent_starts = False
 
-        game_finished = False
-        moves = 0
-        move_history = []
+            agent.newGame(True)
+            opponent.newGame(True)
 
-        while not game_finished and moves < 42:
-            for player in players:
-                if game_finished:
-                    break
+            game_finished = False
+            moves = 0
+            move_history = []
 
-                action = player.getAction(copy.deepcopy(board), start_values[player])
-                move_history.append((player.getName()[:6], action))
+            while not game_finished and moves < 42:
+                for player in players:
+                    if game_finished:
+                        break
 
-                # Validate action
-                possible_actions = board.getPossibleActions()
-                if action not in possible_actions:
-                    winner = -1 if player == agent else 1
-                    game_finished = True
-                    break
+                    action = player.getAction(copy.deepcopy(board), start_values[player])
+                    move_history.append((player.getName()[:6], action))
 
-                board.updateBoard(action, start_values[player])
-                moves += 1
+                    # Validate action
+                    possible_actions = board.getPossibleActions()
+                    if action not in possible_actions:
+                        winner = -1 if player == agent else 1
+                        game_finished = True
+                        break
 
-                if board.checkVictory(action, start_values[player]):
-                    winner = 1 if player == agent else -1
-                    game_finished = True
-                    break
+                    board.updateBoard(action, start_values[player])
+                    moves += 1
 
-                if len(board.getPossibleActions()) == 0:
-                    winner = 0
-                    game_finished = True
-                    break
+                    if board.checkVictory(action, start_values[player]):
+                        winner = 1 if player == agent else -1
+                        game_finished = True
+                        break
 
-        if not game_finished:
-            winner = 0
+                    if len(board.getPossibleActions()) == 0:
+                        winner = 0
+                        game_finished = True
+                        break
 
-        # Record results
-        if winner == 1:
-            results['wins'] += 1
-            outcome = "WIN"
-        elif winner == -1:
-            results['losses'] += 1
-            outcome = "LOSS"
-        else:
-            results['draws'] += 1
-            outcome = "DRAW"
+            if not game_finished:
+                winner = 0
 
-        game_details.append({
-            'game': game_num + 1,
-            'outcome': outcome,
-            'moves': moves,
-            'agent_starts': agent_starts
-        })
+            # Record results
+            if winner == 1:
+                results['wins'] += 1
+                outcome = "WIN"
+            elif winner == -1:
+                results['losses'] += 1
+                outcome = "LOSS"
+            else:
+                results['draws'] += 1
+                outcome = "DRAW"
 
-        # Show individual game results if requested
-        if show_games:
-            starter = "Agent" if agent_starts else "Random"
-            print(f"  Game {game_num + 1:2d}: {outcome:4s} ({moves:2d} moves, {starter} started)")
+            game_details.append({
+                'game': game_num + 1,
+                'outcome': outcome,
+                'moves': moves,
+                'agent_starts': agent_starts
+            })
+
+            # Update progress bar with current stats
+            current_wr = results['wins'] / (game_num + 1)
+            pbar.set_description(f"Testing (WR: {current_wr:.1%})")
+            pbar.update(1)
+
+            # Show individual game results if requested
+            if show_games:
+                starter = "Agent" if agent_starts else "Random"
+                tqdm.write(f"  Game {game_num + 1:2d}: {outcome:4s} ({moves:2d} moves, {starter} started)")
 
     test_time = time.time() - start_time
     total = sum(results.values())

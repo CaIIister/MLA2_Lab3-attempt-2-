@@ -4,6 +4,7 @@ import copy
 from collections import defaultdict
 import gamerules
 from player import Player
+from tqdm import tqdm
 
 try:
     import cupy as cp
@@ -33,134 +34,194 @@ class QLearningTrainer:
     def __init__(self, cuda_batch_size=100):
         self.cuda_batch_size = cuda_batch_size if CUDA_AVAILABLE else 1
 
-    def simulate_game_batch(self, agent, num_games=100):
+    def simulate_game_batch(self, agent, num_games=100, pbar_games=None):
         """Simulate multiple games in parallel for faster training"""
         results = []
         experiences = []
 
         if CUDA_AVAILABLE and num_games >= 10:
             # Parallel simulation on GPU
-            batch_results = self._simulate_batch_cuda(agent, num_games)
+            batch_results = self._simulate_batch_cuda(agent, num_games, pbar_games)
             results.extend(batch_results[0])
             experiences.extend(batch_results[1])
         else:
             # Sequential simulation on CPU
-            for _ in range(num_games):
+            for i in range(num_games):
                 result, game_experiences = self._simulate_single_game(agent)
                 results.append(result)
                 experiences.extend(game_experiences)
 
+                # Update progress bar
+                if pbar_games:
+                    win_rate = sum(1 for r in results if r == 1) / len(results) if results else 0
+                    pbar_games.set_description(f"Batch Games (WR: {win_rate:.1%})")
+                    pbar_games.update(1)
+
         return results, experiences
 
-    def _simulate_batch_cuda(self, agent, num_games):
+    def _simulate_batch_cuda(self, agent, num_games, pbar_games=None):
         """CUDA-accelerated batch simulation"""
         # For simplicity, still run games sequentially but process experiences in batches
         results = []
         all_experiences = []
 
-        for _ in range(num_games):
+        for i in range(num_games):
             result, experiences = self._simulate_single_game(agent)
             results.append(result)
             all_experiences.extend(experiences)
 
+            # Update progress bar
+            if pbar_games and i % max(1, num_games // 20) == 0:  # Update every 5%
+                win_rate = sum(1 for r in results if r == 1) / len(results) if results else 0
+                pbar_games.set_description(f"CUDA Batch (WR: {win_rate:.1%})")
+                pbar_games.n = i + 1
+                pbar_games.refresh()
+
+        if pbar_games:
+            pbar_games.n = num_games
+            pbar_games.refresh()
+
         return results, all_experiences
 
     def _simulate_single_game(self, agent):
-        """Simulate single training game"""
-        board = gamerules.Board()
-        opponent = RNGPlayer("RandomOpponent")
+        """Simulate single training game with proper error handling"""
+        try:
+            board = gamerules.Board()
+            opponent = RNGPlayer("RandomOpponent")
 
-        game_experiences = []
-        game_finished = False
+            game_experiences = []
+            game_finished = False
 
-        # Randomly decide who starts
-        players = [agent, opponent] if np.random.random() < 0.5 else [opponent, agent]
-        start_values = {players[0]: 1, players[1]: -1}
+            # Randomly decide who starts
+            players = [agent, opponent] if np.random.random() < 0.5 else [opponent, agent]
+            start_values = {players[0]: 1, players[1]: -1}
 
-        agent.newGame(True)
-        opponent.newGame(True)
+            agent.newGame(True)
+            opponent.newGame(True)
 
-        move_count = 0
-        while not game_finished and move_count < 42:  # Max possible moves
-            for player in players:
-                if game_finished:
-                    break
+            move_count = 0
+            winner = 0  # Default draw
 
-                current_board = copy.deepcopy(board)
+            while not game_finished and move_count < 42:
+                for player in players:
+                    if game_finished:
+                        break
 
-                # Get action
-                try:
-                    action = player.getAction(current_board, start_values[player])
-                except:
-                    # Player crashed, opponent wins
-                    game_finished = True
-                    winner = -1 if player == agent else 1
-                    break
+                    current_board = copy.deepcopy(board)
 
-                # Validate action
-                possible_actions = board.getPossibleActions()
-                if action not in possible_actions:
-                    # Invalid action, opponent wins
-                    game_finished = True
-                    winner = -1 if player == agent else 1
-                    break
+                    # Get action
+                    try:
+                        action = player.getAction(current_board, start_values[player])
+                    except Exception as e:
+                        # Player crashed, opponent wins
+                        winner = -1 if player == agent else 1
+                        game_finished = True
+                        break
 
-                # Store experience for agent
-                if player == agent:
-                    player_board = current_board.prepareBoardForPlayer(start_values[player])
-                    state = agent.extract_features(player_board, 1)
-                    game_experiences.append((state, action, current_board, start_values[player]))
+                    # Validate action
+                    possible_actions = board.getPossibleActions()
+                    if action not in possible_actions:
+                        # Invalid action, opponent wins
+                        winner = -1 if player == agent else 1
+                        game_finished = True
+                        break
 
-                # Make move
-                board.updateBoard(action, start_values[player])
-                move_count += 1
+                    # Store experience for agent BEFORE making move
+                    if player == agent:
+                        try:
+                            player_board = current_board.prepareBoardForPlayer(start_values[player])
+                            state = agent.extract_features(player_board, 1)
+                            game_experiences.append((state, action, current_board, start_values[player]))
+                        except Exception as e:
+                            print(f"Experience recording error: {e}")
 
-                # Check victory
-                if board.checkVictory(action, start_values[player]):
-                    game_finished = True
-                    winner = 1 if player == agent else -1
-                    break
+                    # Make move
+                    try:
+                        board.updateBoard(action, start_values[player])
+                        move_count += 1
 
-                # Check draw
-                if len(board.getPossibleActions()) == 0:
-                    game_finished = True
-                    winner = 0  # Draw
-                    break
+                        # Check victory
+                        if board.checkVictory(action, start_values[player]):
+                            winner = 1 if player == agent else -1
+                            game_finished = True
+                            break
 
-        # If no winner determined, it's a draw
-        if not game_finished:
-            winner = 0
+                        # Check draw
+                        if len(board.getPossibleActions()) == 0:
+                            winner = 0
+                            game_finished = True
+                            break
 
-        # Assign rewards to experiences
-        final_experiences = []
-        for i, (state, action, prev_board, player_value) in enumerate(game_experiences):
-            # Reward based on game outcome
-            if winner == 1:  # Agent won
-                reward = 10
-            elif winner == -1:  # Agent lost
-                reward = -10
-            else:  # Draw
-                reward = 1
+                    except Exception as e:
+                        print(f"Move execution error: {e}")
+                        winner = -1 if player == agent else 1
+                        game_finished = True
+                        break
 
-            # Add small reward for making valid moves (survival)
-            reward += 0.1
+            # Process experiences
+            final_experiences = []
+            if game_experiences:
+                # Assign rewards
+                if winner == 1:  # Agent won
+                    base_reward = 1000  # Very high reward for winning
+                elif winner == -1:  # Agent lost
+                    base_reward = -500  # Strong penalty for losing
+                else:  # Draw
+                    base_reward = -200  # Heavy penalty for draws to encourage decisive play
 
-            # Get next state
-            if i < len(game_experiences) - 1:
-                next_state, _, next_board, _ = game_experiences[i + 1]
-                next_possible_actions = next_board.getPossibleActions()
-            else:
-                next_state = None
-                next_possible_actions = []
+                for i, (state, action, prev_board, player_value) in enumerate(game_experiences):
+                    try:
+                        # Get next state
+                        if i < len(game_experiences) - 1:
+                            next_state, _, next_board, _ = game_experiences[i + 1]
+                            next_possible_actions = next_board.getPossibleActions()
+                        else:
+                            next_state = state  # Terminal state
+                            next_possible_actions = []
 
-            final_experiences.append((state, action, reward, next_state, next_possible_actions))
+                        # Reward with some decay for earlier moves
+                        reward_mult = (i + 1) / len(game_experiences)
 
-        return winner, final_experiences
+                        # Add intermediate rewards
+                        if i < len(game_experiences) - 1:
+                            next_state, _, next_board, _ = game_experiences[i + 1]
+                            
+                            # Get feature scores for current and next state
+                            current_contour = sum(1 for col in range(7) if agent._evaluate_contour_formation(prev_board.board, col, player_value) >= 2)
+                            next_contour = sum(1 for col in range(7) if agent._evaluate_contour_formation(next_board.board, col, player_value) >= 2)
+                            
+                            current_vulnerable = sum(1 for col in range(7) if agent._evaluate_opponent_vulnerability(prev_board.board, col, player_value) >= 2)
+                            next_vulnerable = sum(1 for col in range(7) if agent._evaluate_opponent_vulnerability(next_board.board, col, player_value) >= 2)
+                            
+                            current_escape = sum(1 for col in range(7) if agent._evaluate_escape_routes(prev_board.board, col, player_value) >= 2)
+                            next_escape = sum(1 for col in range(7) if agent._evaluate_escape_routes(next_board.board, col, player_value) >= 2)
+                            
+                            # Reward improvements in position
+                            if next_contour > current_contour and next_vulnerable > current_vulnerable:
+                                final_reward = base_reward * reward_mult + 50  # Big bonus for improving position
+                            elif next_escape > current_escape:
+                                final_reward = base_reward * reward_mult + 20  # Smaller bonus for maintaining escape routes
+                            else:
+                                final_reward = base_reward * reward_mult
+                        else:
+                            final_reward = base_reward * reward_mult
 
-    def train_agent(self, training_minutes=15, test_interval=5000):
+                        final_experiences.append((state, action, final_reward, next_state, next_possible_actions))
+                    except Exception as e:
+                        print(f"Experience processing error: {e}")
+
+            return winner, final_experiences
+
+        except Exception as e:
+            print(f"Game simulation error: {e}")
+            return 0, []  # Return draw with no experiences
+
+    def train_agent(self, training_minutes=15, test_interval=300):
         """Train the Q-learning agent"""
         agent = Player("QLearning Agent")
-        agent.epsilon = 0.3  # Start with exploration
+        agent.epsilon = 1.0  # Start with pure exploration
+        agent.learning_rate = 0.4  # Moderate learning rate
+        agent.discount_factor = 0.9  # Balance immediate and future rewards
 
         print(f"Starting training for {training_minutes} minutes...")
         print("=" * 60)
@@ -182,53 +243,92 @@ class QLearningTrainer:
         last_test_time = start_time
         last_games = 0
 
-        while time.time() < end_time:
-            batch_start = time.time()
+        # Main training progress bar (time-based)
+        training_duration = training_minutes * 60
+        with tqdm(total=training_duration, desc="Training Progress", unit="s",
+                  bar_format="{desc}: {percentage:3.0f}%|{bar}| {elapsed}/{remaining} [{rate_fmt}]") as pbar_time:
 
-            # Simulate batch of games
-            results, experiences = self.simulate_game_batch(agent, self.cuda_batch_size)
-
-            # Update Q-table with experiences
-            for state, action, reward, next_state, next_possible_actions in experiences:
-                agent.update_q_value(state, action, reward, next_state, next_possible_actions)
-
-            # Update statistics
-            for result in results:
-                total_games += 1
-                if result == 1:
-                    wins += 1
-                elif result == -1:
-                    losses += 1
-                else:
-                    draws += 1
-
-            # Decay epsilon (reduce exploration over time)
-            agent.epsilon = max(0.05, agent.epsilon * 0.9995)
-
-            # Print progress every test_interval games
-            if total_games - last_games >= test_interval:
+            while time.time() < end_time:
                 current_time = time.time()
-                elapsed = (current_time - start_time) / 60
-                games_per_min = total_games / elapsed if elapsed > 0 else 0
-                win_rate = wins / total_games if total_games > 0 else 0
+                elapsed_time = current_time - start_time
 
-                print(f"Games: {total_games:6d} | "
-                      f"Time: {elapsed:4.1f}m | "
-                      f"Win Rate: {win_rate:5.1%} | "
-                      f"Q-States: {len(agent.q_table):6d} | "
-                      f"Epsilon: {agent.epsilon:.3f} | "
-                      f"Speed: {games_per_min:.0f} games/min")
+                # Update time progress bar
+                pbar_time.n = min(elapsed_time, training_duration)
+                pbar_time.refresh()
 
-                training_stats['games_per_minute'].append(games_per_min)
-                training_stats['win_rates'].append(win_rate)
-                training_stats['q_table_sizes'].append(len(agent.q_table))
+                batch_start = time.time()
 
-                last_games = total_games
+                # Games progress bar for this batch
+                with tqdm(total=self.cuda_batch_size, desc="Game Batch",
+                          leave=False, disable=self.cuda_batch_size < 10) as pbar_games:
+
+                    # Simulate batch of games
+                    results, experiences = self.simulate_game_batch(agent, self.cuda_batch_size, pbar_games)
+
+                # Update Q-table with experiences
+                experience_count = 0
+                if experiences:
+                    for state, action, reward, next_state, next_possible_actions in experiences:
+                        agent.update_q_value(state, action, reward, next_state, next_possible_actions)
+                        experience_count += 1
+
+                # Debug info for first few batches
+                if total_games < 1000 and experience_count == 0:
+                    tqdm.write(f"WARNING: No experiences generated in batch of {len(results)} games")
+
+                # Update statistics
+                for result in results:
+                    total_games += 1
+                    if result == 1:
+                        wins += 1
+                    elif result == -1:
+                        losses += 1
+                    else:
+                        draws += 1
+
+                # Exploration strategy
+                if total_games < 200:  # Initial phase
+                    agent.epsilon = max(0.6, agent.epsilon * 0.99)  # Quick initial decay
+                elif total_games < 500:  # Middle phase
+                    agent.epsilon = max(0.3, agent.epsilon * 0.995)  # Moderate decay
+                else:  # Late phase
+                    agent.epsilon = max(0.1, agent.epsilon * 0.999)  # Very slow decay
+
+                # Update progress bar description with current stats
+                if total_games > 0:
+                    win_rate = wins / total_games
+                    games_per_min = total_games / (elapsed_time / 60) if elapsed_time > 0 else 0
+
+                    pbar_time.set_description(
+                        f"Training │ Games:{total_games:5d} │ WR:{win_rate:5.1%} │ "
+                        f"States:{len(agent.q_table):5d} │ ε:{agent.epsilon:.3f} │ "
+                        f"Speed:{games_per_min:.0f}/min"
+                    )
+
+                # Detailed progress every test_interval games OR every 60 seconds
+                if (total_games - last_games >= test_interval) or (current_time - last_test_time >= 60):
+                    elapsed = elapsed_time / 60
+                    games_per_min = total_games / elapsed if elapsed > 0 else 0
+                    win_rate = wins / total_games if total_games > 0 else 0
+
+                    tqdm.write(f"┌─ Checkpoint │ Games:{total_games:6d} │ Time:{elapsed:4.1f}m │ "
+                               f"WinRate:{win_rate:5.1%} │ Q-States:{len(agent.q_table):6d}")
+
+                    training_stats['games_per_minute'].append(games_per_min)
+                    training_stats['win_rates'].append(win_rate)
+                    training_stats['q_table_sizes'].append(len(agent.q_table))
+
+                    last_games = total_games
+                    last_test_time = current_time
+
+                # Small delay to prevent overwhelming the console
+                if self.cuda_batch_size < 10:
+                    time.sleep(0.01)
 
         training_time = (time.time() - start_time) / 60
         final_win_rate = wins / total_games if total_games > 0 else 0
 
-        print("=" * 60)
+        print("\n" + "=" * 60)
         print(f"Training completed in {training_time:.1f} minutes")
         print(f"Total games: {total_games}")
         print(f"Final win rate: {final_win_rate:.1%} (W:{wins} L:{losses} D:{draws})")
@@ -254,70 +354,73 @@ def benchmark_agent(agent, num_test_games=100):
 
     print(f"Testing against random player ({num_test_games} games)...")
 
-    for game_num in range(num_test_games):
-        board = gamerules.Board()
+    # Progress bar for testing
+    with tqdm(total=num_test_games, desc="Testing",
+              bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]") as pbar:
 
-        # Alternate who starts
-        if game_num % 2 == 0:
-            players = [agent, opponent]
-            start_values = {agent: 1, opponent: -1}
-            agent_starts = True
-        else:
-            players = [opponent, agent]
-            start_values = {opponent: 1, agent: -1}
-            agent_starts = False
+        for game_num in range(num_test_games):
+            board = gamerules.Board()
 
-        agent.newGame(True)
-        opponent.newGame(True)
+            # Alternate who starts
+            if game_num % 2 == 0:
+                players = [agent, opponent]
+                start_values = {agent: 1, opponent: -1}
+                agent_starts = True
+            else:
+                players = [opponent, agent]
+                start_values = {opponent: 1, agent: -1}
+                agent_starts = False
 
-        game_finished = False
-        moves = 0
+            agent.newGame(True)
+            opponent.newGame(True)
 
-        while not game_finished and moves < 42:
-            for player in players:
-                if game_finished:
-                    break
+            game_finished = False
+            moves = 0
 
-                action = player.getAction(copy.deepcopy(board), start_values[player])
+            while not game_finished and moves < 42:
+                for player in players:
+                    if game_finished:
+                        break
 
-                # Validate action
-                possible_actions = board.getPossibleActions()
-                if action not in possible_actions:
-                    # Invalid move
-                    winner = -1 if player == agent else 1
-                    game_finished = True
-                    break
+                    action = player.getAction(copy.deepcopy(board), start_values[player])
 
-                board.updateBoard(action, start_values[player])
-                moves += 1
+                    # Validate action
+                    possible_actions = board.getPossibleActions()
+                    if action not in possible_actions:
+                        # Invalid move
+                        winner = -1 if player == agent else 1
+                        game_finished = True
+                        break
 
-                if board.checkVictory(action, start_values[player]):
-                    winner = 1 if player == agent else -1
-                    game_finished = True
-                    break
+                    board.updateBoard(action, start_values[player])
+                    moves += 1
 
-                if len(board.getPossibleActions()) == 0:
-                    winner = 0  # Draw
-                    game_finished = True
-                    break
+                    if board.checkVictory(action, start_values[player]):
+                        winner = 1 if player == agent else -1
+                        game_finished = True
+                        break
 
-        if not game_finished:
-            winner = 0
+                    if len(board.getPossibleActions()) == 0:
+                        winner = 0  # Draw
+                        game_finished = True
+                        break
 
-        game_lengths.append(moves)
+            if not game_finished:
+                winner = 0
 
-        if winner == 1:
-            results['wins'] += 1
-        elif winner == -1:
-            results['losses'] += 1
-        else:
-            results['draws'] += 1
+            game_lengths.append(moves)
 
-        # Progress indicator
-        if (game_num + 1) % 20 == 0:
+            if winner == 1:
+                results['wins'] += 1
+            elif winner == -1:
+                results['losses'] += 1
+            else:
+                results['draws'] += 1
+
+            # Update progress bar with current win rate
             current_wr = results['wins'] / (game_num + 1)
-            print(f"  Progress: {game_num + 1:3d}/{num_test_games} games | "
-                  f"Current win rate: {current_wr:.1%}")
+            pbar.set_description(f"Testing (WR: {current_wr:.1%})")
+            pbar.update(1)
 
     # Final results
     total = sum(results.values())
@@ -343,8 +446,8 @@ def benchmark_agent(agent, num_test_games=100):
 if __name__ == "__main__":
     trainer = QLearningTrainer()
 
-    # Train the agent
-    agent, training_stats = trainer.train_agent(training_minutes=15, test_interval=2000)
+    # Train the agent (shorter initial training)
+    agent, training_stats = trainer.train_agent(training_minutes=5, test_interval=200)
 
     # Benchmark the trained agent
     final_win_rate, results = benchmark_agent(agent, num_test_games=100)
