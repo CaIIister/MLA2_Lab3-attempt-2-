@@ -66,7 +66,7 @@ class Player(BasePlayer):
             # Convert to player perspective
             player_board = board.prepareBoardForPlayer(startValue)
 
-            # Extract simple strategic features
+            # Extract features
             state = self._extract_strategic_features(player_board, possible_actions)
 
             # Use Q-learning for strategic choice
@@ -118,14 +118,13 @@ class Player(BasePlayer):
 
         # Threat potential for each possible action
         threat_scores = []
-        for action in possible_actions:
-            score = self._evaluate_threat_potential(board, action)
+        for action in range(7):  # Always evaluate all columns
+            if action in possible_actions:
+                score = self._evaluate_threat_potential(board, action)
+            else:
+                score = 0
             threat_scores.append(min(score, 5))
-
-        # Pad to fixed size (max 7 actions)
-        while len(threat_scores) < 7:
-            threat_scores.append(0)
-        features.extend(threat_scores[:7])
+        features.extend(threat_scores)
 
         return tuple(features)
 
