@@ -77,7 +77,7 @@ class EnhancedDQN(nn.Module):
 class FallbackDQN:
     """Fallback NumPy implementation if PyTorch is not available"""
 
-    def __init__(self, input_size=200, hidden_sizes=[512, 256, 128], output_size=7):
+    def __init__(self, input_size=193, hidden_sizes=[512, 256, 128], output_size=7):
         self.input_size = input_size
         self.output_size = output_size
 
@@ -127,13 +127,13 @@ class EnhancedTestPlayer(gamerules.Player):
         # Initialize network
         if CUDA_AVAILABLE:
             self.q_network = EnhancedDQN(
-                input_size=200,
+                input_size=193,
                 hidden_sizes=[512, 256, 128],
                 output_size=7
             )
         else:
             self.q_network = FallbackDQN(
-                input_size=200,
+                input_size=193,
                 hidden_sizes=[512, 256, 128],
                 output_size=7
             )
@@ -147,14 +147,14 @@ class EnhancedTestPlayer(gamerules.Player):
         else:
             print("ℹ️ No weights file found, using random weights")
 
-        # Verify feature encoding produces exactly 200 features
+        # Verify feature encoding produces exactly 193 features
         try:
             dummy_board = gamerules.Board()
             dummy_features = self.encode_state_contour_aware(dummy_board, 1)
             feature_count = len(dummy_features)
             print(f"✅ Feature encoding verified: {feature_count} features")
-            if feature_count != 200:
-                print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
+            if feature_count != 193:
+                print(f"⚠️ Warning: Expected 193 features, got {feature_count}")
         except Exception as e:
             print(f"⚠️ Feature encoding test failed: {e}")
 
@@ -639,7 +639,7 @@ def evaluate_enhanced_player(player, num_games=100, verbose=False):
     # Technical info
     print(f"\nTechnical Info:")
     print(f"  Device:            {'CUDA' if CUDA_AVAILABLE else 'CPU'}")
-    print(f"  State encoding:    200 features (contour-aware)")
+    print(f"  State encoding:    193 features (contour-aware)")
     print(f"  Network arch:      [512, 256, 128] with BatchNorm + Dropout")
 
     if wins >= num_games * 0.8:

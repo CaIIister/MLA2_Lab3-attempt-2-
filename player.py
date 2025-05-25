@@ -152,8 +152,8 @@ class Player(gamerules.Player):
             dummy_board = gamerules.Board()
             dummy_features = self._encode_state_contour_aware(dummy_board, 1)
             feature_count = len(dummy_features)
-            if feature_count != 200:
-                print(f"⚠️ Warning: Expected 200 features, got {feature_count}")
+            if feature_count != 193:
+                print(f"⚠️ Warning: Expected 193 features, got {feature_count}")
         except Exception as e:
             print(f"⚠️ Feature encoding test failed: {e}")
 
