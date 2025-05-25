@@ -10,9 +10,9 @@ class Player(BasePlayer):
     def __init__(self, name, weights_file=None):
         super().__init__(name)
         self.q_table = {}
-        self.learning_rate = 0.3
-        self.discount_factor = 0.9
-        self.epsilon = 0.0  # No exploration during play
+        self.learning_rate = 0.5
+        self.discount_factor = 0.8
+        self.epsilon = 0.0
         self.weights_file = weights_file
 
         # Load pre-trained weights if available
@@ -25,184 +25,206 @@ class Player(BasePlayer):
                 print("Failed to load weights, starting fresh")
                 self.q_table = {}
 
-    def extract_features(self, board, player_value):
-        """Extract features focused on encirclement and component formation"""
+    def getAction(self, board, startValue):
+        """Main decision method with tactical override"""
+        try:
+            possible_actions = board.getPossibleActions()
+            if len(possible_actions) == 0:
+                return 0
+
+            # LAYER 1: TACTICAL DECISIONS (Perfect play)
+            tactical_move = self._get_tactical_move(board, startValue, possible_actions)
+            if tactical_move is not None:
+                return tactical_move
+
+            # LAYER 2: RL STRATEGIC DECISIONS
+            strategic_move = self._get_strategic_move(board, startValue, possible_actions)
+            return strategic_move
+
+        except Exception as e:
+            print(f"getAction error: {e}")
+            return np.random.choice(board.getPossibleActions())
+
+    def _get_tactical_move(self, board, startValue, possible_actions):
+        """Perfect tactical play: always take wins, always block threats"""
+        # Check for immediate wins
+        for action in possible_actions:
+            if self._test_win_move(board, action, startValue):
+                return action
+
+        # Check for immediate threats to block
+        for action in possible_actions:
+            if self._test_win_move(board, action, -startValue):
+                return action
+
+        # No immediate tactical decision needed
+        return None
+
+    def _get_strategic_move(self, board, startValue, possible_actions):
+        """RL-based strategic decisions"""
+        try:
+            # Convert to player perspective
+            player_board = board.prepareBoardForPlayer(startValue)
+
+            # Extract simple strategic features
+            state = self._extract_strategic_features(player_board, possible_actions)
+
+            # Use Q-learning for strategic choice
+            if np.random.random() < self.epsilon:
+                return self._get_heuristic_move(player_board, possible_actions)
+
+            # Get Q-values
+            q_values = [self.get_q_value(state, action) for action in possible_actions]
+
+            # If no learned preference, use heuristics
+            if max(q_values) - min(q_values) < 0.1:
+                return self._get_heuristic_move(player_board, possible_actions)
+
+            # Choose best Q-value
+            max_q = max(q_values)
+            best_actions = [a for a, q in zip(possible_actions, q_values) if abs(q - max_q) < 0.01]
+            return np.random.choice(best_actions)
+
+        except Exception as e:
+            print(f"Strategic move error: {e}")
+            return self._get_heuristic_move(board.prepareBoardForPlayer(startValue), possible_actions)
+
+    def _extract_strategic_features(self, board, possible_actions):
+        """Extract simple strategic features - focus on board control patterns"""
         features = []
-        
-        # 1. Check for immediate wins/blocks (14 features)
-        for col in range(7):
-            can_win = self._test_capture_move(board, col, player_value)
-            must_block = self._test_capture_move(board, col, -player_value)
-            features.extend([1 if can_win else 0, 1 if must_block else 0])
 
-        # 2. Component strength (7 features)
-        for col in range(7):
-            comp_score = self._evaluate_component_strength(board, col, player_value)
-            features.append(comp_score)
+        # Game phase (early/mid/late)
+        filled_cells = np.sum(board != 0)
+        if filled_cells < 10:
+            phase = 0  # Early
+        elif filled_cells < 25:
+            phase = 1  # Mid
+        else:
+            phase = 2  # Late
+        features.append(phase)
 
-        # 3. Encirclement potential (7 features)
-        for col in range(7):
-            encircle_score = self._evaluate_encirclement(board, col, player_value)
-            features.append(encircle_score)
+        # Center control strength
+        center_cols = [2, 3, 4]
+        my_center = sum(np.sum(board[:, col] == 1) for col in center_cols)
+        opp_center = sum(np.sum(board[:, col] == -1) for col in center_cols)
+        features.append(min(my_center - opp_center + 5, 10))  # Normalized
 
-        # 4. Position control (7 features)
+        # Column heights (simplified)
+        heights = []
         for col in range(7):
-            control_score = self._evaluate_position_control(board, col, player_value)
-            features.append(control_score)
-        
+            height = np.sum(board[:, col] != 0)
+            heights.append(min(height, 6))
+        features.extend(heights)
+
+        # Threat potential for each possible action
+        threat_scores = []
+        for action in possible_actions:
+            score = self._evaluate_threat_potential(board, action)
+            threat_scores.append(min(score, 5))
+
+        # Pad to fixed size (max 7 actions)
+        while len(threat_scores) < 7:
+            threat_scores.append(0)
+        features.extend(threat_scores[:7])
+
         return tuple(features)
 
-    def _evaluate_component_strength(self, board, col, player_value):
-        """Evaluate strength of connected components"""
+    def _evaluate_threat_potential(self, board, col):
+        """Simple threat evaluation"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
-                return -1
+                return 0
 
-            # Create test board to check components
-            test_board = gamerules.Board()
-            test_board.board = board.copy()
-            test_board.updateBoard(col, player_value)
-            
-            # Get component sizes after move
-            components = test_board.components  # Diagonal connections
-            components4 = test_board.components4  # Orthogonal connections
-            
-            # Find our components
-            our_components = np.unique(components[components * player_value > 0])
-            our_components4 = np.unique(components4[components4 * player_value > 0])
-            
-            # Score based on component sizes and connectivity
             score = 0
-            for comp in our_components:
-                size = np.sum(components == comp)
-                if size >= 3:  # Larger components are better
-                    score += size * 2
-                    
-            for comp in our_components4:
-                size = np.sum(components4 == comp)
-                if size >= 3:
-                    score += size
-                    
-            return score
-        except Exception:
-            return 0
 
-    def _evaluate_encirclement(self, board, col, player_value):
-        """Evaluate potential for encircling opponent pieces"""
-        try:
-            landing_row = self._get_landing_row(board, col)
-            if landing_row is None:
-                return -1
-
-            # Create test board
-            test_board = gamerules.Board()
-            test_board.board = board.copy()
-            test_board.updateBoard(col, player_value)
-            
-            score = 0
-            # Check 5x5 area for opponent pieces that could be trapped
-            for r in range(max(0, landing_row-2), min(6, landing_row+3)):
-                for c in range(max(0, col-2), min(7, col+3)):
-                    if board[r,c] == -player_value:
-                        # Count our pieces around opponent
-                        our_pieces = 0
-                        gaps = 0
-                        for dr in [-1, 0, 1]:
-                            for dc in [-1, 0, 1]:
-                                if dr == 0 and dc == 0:
-                                    continue
-                                nr, nc = r + dr, c + dc
-                                if 0 <= nr < 6 and 0 <= nc < 7:
-                                    if board[nr,nc] == player_value:
-                                        our_pieces += 1
-                                    elif board[nr,nc] == 0:
-                                        gaps += 1
-                        
-                        # Score based on encirclement potential
-                        if our_pieces >= 2 and gaps <= 3:
-                            score += our_pieces + (3 - gaps)
-                            
-            return score
-        except Exception:
-            return 0
-
-    def _evaluate_position_control(self, board, col, player_value):
-        """Evaluate strategic control of the board"""
-        try:
-            landing_row = self._get_landing_row(board, col)
-            if landing_row is None:
-                return -1
-
-            control = 0
-            
-            # Strong center control early game
-            if sum(1 for c in range(7) if board[5,c] == 0) >= 5:
-                center_dist = abs(col - 3)
-                control += (4 - center_dist) * 3
-            
-            # Check for strategic positions
-            directions = [(0,1), (1,1), (1,0), (1,-1)]
-            for dr, dc in directions:
-                # Look both ways
-                our_count = 0
-                opp_count = 0
-                for mult in [-1, 1]:
-                    r, c = landing_row + dr * mult, col + dc * mult
+            # Check immediate neighborhood for opponent pieces
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    r, c = landing_row + dr, col + dc
                     if 0 <= r < 6 and 0 <= c < 7:
-                        if board[r,c] == player_value:
-                            our_count += 1
-                        elif board[r,c] == -player_value:
-                            opp_count += 1
-                
-                # Reward positions that help connect pieces or trap opponents
-                if our_count > 0 and opp_count > 0:
-                    control += our_count * 2 + opp_count
-                elif our_count > 0:
-                    control += our_count
-                    
-            return control
-        except Exception:
+                        if board[r, c] == -1:  # Opponent piece
+                            score += 2
+                        elif board[r, c] == 1:  # My piece
+                            score += 1
+
+            # Prefer center columns in early game
+            if np.sum(board != 0) < 15:
+                center_bonus = max(0, 3 - abs(col - 3))
+                score += center_bonus
+
+            return score
+
+        except:
             return 0
+
+    def _get_heuristic_move(self, board, possible_actions):
+        """Simple heuristic fallback"""
+        scores = []
+        for action in possible_actions:
+            score = 0
+
+            # Prefer center early
+            if np.sum(board != 0) < 12:
+                score += max(0, 4 - abs(action - 3))
+
+            # Prefer building near opponent pieces
+            landing_row = self._get_landing_row(board, action)
+            if landing_row is not None:
+                for dr in [-1, 0, 1]:
+                    for dc in [-1, 0, 1]:
+                        r, c = landing_row + dr, action + dc
+                        if 0 <= r < 6 and 0 <= c < 7 and board[r, c] == -1:
+                            score += 2
+
+            scores.append(score)
+
+        max_score = max(scores)
+        best_actions = [a for a, s in zip(possible_actions, scores) if s >= max_score - 1]
+        return np.random.choice(best_actions)
+
+    def _test_win_move(self, board, col, player_value):
+        """Test if move results in victory using actual game engine"""
+        try:
+            # Check if column is playable
+            possible_actions = board.getPossibleActions()
+            if col not in possible_actions:
+                return False
+
+            # Create test board and make move
+            test_board = gamerules.Board()
+            test_board.board = board.board.copy()
+            test_board.components = board.components.copy()
+            test_board.components4 = board.components4.copy()
+            test_board.componentID = board.componentID
+            test_board.component4ID = board.component4ID
+
+            # Make the move using game engine
+            test_board.updateBoard(col, player_value)
+
+            # Check victory using game engine
+            return test_board.checkVictory(col, player_value)
+
+        except Exception as e:
+            print(f"Win test error: {e}")
+            return False
 
     def _get_landing_row(self, board, col):
-        """Get the row where a piece would land in given column"""
+        """Get landing row for piece in column"""
         try:
-            if np.sum(board[:, col] != 0) >= 6:
-                return None
             empty_rows = np.where(board[:, col] == 0)[0]
             return np.max(empty_rows) if len(empty_rows) > 0 else None
-        except Exception:
+        except:
             return None
-
-    def _test_capture_move(self, board, col, player_value):
-        """Test if dropping in column results in capturing opponent's piece"""
-        try:
-            if np.sum(board[:, col] != 0) >= 6:
-                return False
-
-            # Find landing row
-            empty_rows = np.where(board[:, col] == 0)[0]
-            if len(empty_rows) == 0:
-                return False
-
-            landing_row = np.max(empty_rows)
-
-            # Create test board
-            test_board_obj = gamerules.Board()
-            test_board_obj.board = board.copy()
-            test_board_obj.updateBoard(col, player_value)
-            return test_board_obj.checkVictory(col, player_value)
-
-        except Exception:
-            return False
 
     def get_q_value(self, state, action):
         """Get Q-value for state-action pair"""
         return self.q_table.get((state, action), 0.0)
 
     def update_q_value(self, state, action, reward, next_state, next_possible_actions):
-        """Update Q-value using Q-learning update rule"""
+        """Update Q-value using Q-learning"""
         try:
             if len(next_possible_actions) == 0:
                 max_next_q = 0
@@ -215,93 +237,38 @@ class Player(BasePlayer):
         except Exception as e:
             print(f"Q-update error: {e}")
 
-    def select_action(self, state, possible_actions):
-        """Select action with focus on encirclement and component building"""
+    def select_action_for_training(self, board, startValue, possible_actions):
+        """Training-time action selection with exploration"""
         try:
-            # First, check for immediate wins
-            for action in possible_actions:
-                if state[action] == 1:  # Can win in this column
-                    return action
+            # Still use tactical override in training
+            tactical_move = self._get_tactical_move(board, startValue, possible_actions)
+            if tactical_move is not None:
+                return tactical_move
 
-            # Second, check for blocks
-            for action in possible_actions:
-                if state[7 + action] == 1:  # Must block in this column
-                    return action
+            # Strategic decision with exploration
+            player_board = board.prepareBoardForPlayer(startValue)
+            state = self._extract_strategic_features(player_board, possible_actions)
 
-            # Use Q-learning with epsilon-greedy
             if np.random.random() < self.epsilon:
-                # During exploration, prefer moves that build strong components or encircle
-                scores = []
-                for action in possible_actions:
-                    comp_score = state[14 + action] * 2  # Component strength
-                    encircle_score = state[21 + action] * 3  # Encirclement potential
-                    position_score = state[28 + action]  # Position control
-                    scores.append(comp_score + encircle_score + position_score)
-                    
-                total_score = sum(scores)
-                if total_score > 0:
-                    probs = np.array(scores) / total_score
-                    return np.random.choice(possible_actions, p=probs)
-                else:
-                    # If no good moves, prefer center
-                    weights = [4, 5, 6, 8, 6, 5, 4]
-                    probs = [weights[a] for a in possible_actions]
-                    probs = np.array(probs) / sum(probs)
-                    return np.random.choice(possible_actions, p=probs)
+                return self._get_heuristic_move(player_board, possible_actions)
 
-            # Get Q-values for all possible actions
             q_values = [self.get_q_value(state, action) for action in possible_actions]
-            
-            # If Q-values are similar, use heuristic scores
-            if max(q_values) - min(q_values) < 0.1:
-                scores = []
-                for action in possible_actions:
-                    comp_score = state[14 + action] * 2
-                    encircle_score = state[21 + action] * 3
-                    position_score = state[28 + action]
-                    scores.append(comp_score + encircle_score + position_score)
-                
-                max_score = max(scores)
-                best_actions = [action for action, score in zip(possible_actions, scores) 
-                              if score >= max_score - 2]  # Allow some variation
-                return np.random.choice(best_actions)
-            
-            # Otherwise choose best Q-value
             max_q = max(q_values)
-            best_actions = [action for action, q in zip(possible_actions, q_values) 
-                           if abs(q - max_q) < 0.001]
+            best_actions = [a for a, q in zip(possible_actions, q_values) if abs(q - max_q) < 0.01]
             return np.random.choice(best_actions)
 
         except Exception as e:
-            print(f"Action selection error: {e}")
+            print(f"Training action error: {e}")
             return np.random.choice(possible_actions)
 
-    def getAction(self, board, startValue):
-        """Main method called by game engine"""
+    def extract_features_for_training(self, board, player_value):
+        """Extract features for training experience"""
         try:
-            # Convert board to player perspective
-            player_board = board.prepareBoardForPlayer(startValue)
-
-            # Extract features
-            state = self.extract_features(player_board, 1)
-
-            # Get possible actions
-            possible_actions = board.getPossibleActions()
-
-            if len(possible_actions) == 0:
-                return 0
-
-            # Select action
-            action = self.select_action(state, possible_actions)
-            return int(action)
-
-        except Exception as e:
-            print(f"getAction error: {e}")
-            # Fallback to random
-            possible_actions = board.getPossibleActions()
-            if len(possible_actions) > 0:
-                return np.random.choice(possible_actions)
-            return 0
+            possible_actions = list(range(7))  # All columns
+            valid_actions = [i for i in range(7) if np.sum(board[:, i] != 0) < 6]
+            return self._extract_strategic_features(board, valid_actions)
+        except:
+            return tuple([0] * 17)  # Default feature vector
 
     def newGame(self, new_opponent):
         """Called at start of new game"""

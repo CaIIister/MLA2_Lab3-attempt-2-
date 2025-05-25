@@ -163,12 +163,11 @@ class QLearningTrainer:
             if game_experiences:
                 # Assign rewards
                 if winner == 1:  # Agent won
-                    moves_factor = max(0.5, 1.0 - (move_count / 42))  # Less aggressive scaling
-                    base_reward = 3000 * moves_factor  # High reward for winning
-                elif winner == -1:  # Agent lost
-                    base_reward = -1500  # Significant penalty
+                    base_reward = 100
+                elif winner == -1:  # Agent lost  
+                    base_reward = -50
                 else:  # Draw
-                    base_reward = -800  # Heavy penalty for draws
+                    base_reward = 10
 
                 for i, (state, action, prev_board, player_value) in enumerate(game_experiences):
                     try:
@@ -180,31 +179,9 @@ class QLearningTrainer:
                             next_state = state  # Terminal state
                             next_possible_actions = []
 
-                        # Gradual reward decay
-                        reward_mult = 0.7 + (0.3 * (i + 1) / len(game_experiences))
-
-                        # Add intermediate rewards
-                        if i < len(game_experiences) - 1:
-                            next_state, _, next_board, _ = game_experiences[i + 1]
-                            
-                            # Get feature scores for current and next state
-                            current_comp = agent._evaluate_component_strength(prev_board.board, action, player_value)
-                            next_comp = max(agent._evaluate_component_strength(next_board.board, col, player_value) 
-                                        for col in range(7))
-                            
-                            current_encircle = agent._evaluate_encirclement(prev_board.board, action, player_value)
-                            next_encircle = max(agent._evaluate_encirclement(next_board.board, col, player_value) 
-                                            for col in range(7))
-                            
-                            # Reward improvements in position
-                            if next_encircle > current_encircle:
-                                final_reward = base_reward * reward_mult + 250  # Big bonus for better encirclement
-                            elif next_comp > current_comp:
-                                final_reward = base_reward * reward_mult + 150  # Bonus for better components
-                            else:
-                                final_reward = base_reward * reward_mult
-                        else:
-                            final_reward = base_reward * reward_mult
+                        # Reward with some decay for earlier moves
+                        reward_mult = (i + 1) / len(game_experiences)
+                        final_reward = base_reward * reward_mult + 1
 
                         final_experiences.append((state, action, final_reward, next_state, next_possible_actions))
                     except Exception as e:
@@ -219,9 +196,8 @@ class QLearningTrainer:
     def train_agent(self, training_minutes=15, test_interval=300):
         """Train the Q-learning agent"""
         agent = Player("QLearning Agent")
-        agent.epsilon = 1.0  # Start with pure exploration
-        agent.learning_rate = 0.4  # Moderate learning rate for stability
-        agent.discount_factor = 0.8  # Higher discount to value future contours
+        agent.epsilon = 0.5  # Higher initial exploration
+        agent.learning_rate = 0.3  # Faster learning
 
         print(f"Starting training for {training_minutes} minutes...")
         print("=" * 60)
@@ -286,13 +262,8 @@ class QLearningTrainer:
                     else:
                         draws += 1
 
-                # Exploration strategy
-                if total_games < 100:  # Initial phase
-                    agent.epsilon = max(0.4, agent.epsilon * 0.97)  # Very quick initial decay
-                elif total_games < 300:  # Middle phase
-                    agent.epsilon = max(0.2, agent.epsilon * 0.98)  # Quick decay
-                else:  # Late phase
-                    agent.epsilon = max(0.1, agent.epsilon * 0.999)  # Maintain some exploration
+                # Decay epsilon (reduce exploration over time)
+                agent.epsilon = max(0.1, agent.epsilon * 0.999)  # Slower decay
 
                 # Update progress bar description with current stats
                 if total_games > 0:
