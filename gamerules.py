@@ -193,8 +193,8 @@ class Board:
                     allClosedForComponent = False
                     break
             if (allClosedForComponent):
-                #print("Closed indices:")
-                #print(indices)
+                print("Closed indices:")
+                print(indices)
                 foundOtherValueInside = True
                 break
         return foundOtherValueInside
