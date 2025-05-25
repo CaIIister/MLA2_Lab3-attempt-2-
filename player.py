@@ -26,7 +26,7 @@ class Player(BasePlayer):
                 self.q_table = {}
 
     def extract_features(self, board, player_value):
-        """Extract features focused on aggressive pattern formation"""
+        """Extract features focused on encirclement and component formation"""
         features = []
         
         # 1. Check for immediate wins/blocks (14 features)
@@ -35,126 +35,133 @@ class Player(BasePlayer):
             must_block = self._test_capture_move(board, col, -player_value)
             features.extend([1 if can_win else 0, 1 if must_block else 0])
 
-        # 2. Pattern strength (7 features)
+        # 2. Component strength (7 features)
         for col in range(7):
-            pattern_score = self._evaluate_pattern_strength(board, col, player_value)
-            features.append(pattern_score)
+            comp_score = self._evaluate_component_strength(board, col, player_value)
+            features.append(comp_score)
 
-        # 3. Piece density (7 features)
+        # 3. Encirclement potential (7 features)
         for col in range(7):
-            density_score = self._evaluate_piece_density(board, col, player_value)
-            features.append(density_score)
+            encircle_score = self._evaluate_encirclement(board, col, player_value)
+            features.append(encircle_score)
 
-        # 4. Position value (7 features)
+        # 4. Position control (7 features)
         for col in range(7):
-            position_score = self._evaluate_position_value(board, col, player_value)
-            features.append(position_score)
+            control_score = self._evaluate_position_control(board, col, player_value)
+            features.append(control_score)
         
         return tuple(features)
 
-    def _evaluate_pattern_strength(self, board, col, player_value):
-        """Evaluate strength of potential winning patterns"""
+    def _evaluate_component_strength(self, board, col, player_value):
+        """Evaluate strength of connected components"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            # Key winning patterns
-            patterns = [
-                [(0,1), (1,0)],      # L corner
-                [(0,-1), (1,0)],     # L corner
-                [(1,1), (1,-1)],     # V shape
-                [(0,1), (0,2)],      # Horizontal
-                [(1,0), (2,0)]       # Vertical
-            ]
+            # Create test board to check components
+            test_board = gamerules.Board()
+            test_board.board = board.copy()
+            test_board.updateBoard(col, player_value)
             
-            max_score = 0
-            for pattern in patterns:
-                score = 0
-                opponent_trapped = False
-                our_pieces = 0
-                
-                # Check if we have pieces forming the pattern
-                for dr, dc in pattern:
-                    r, c = landing_row + dr, col + dc
-                    if 0 <= r < 6 and 0 <= c < 7:
-                        if board[r,c] == player_value:
-                            our_pieces += 1
-                            score += 2
-                        elif board[r,c] == 0:
-                            score += 1
-                
-                # Check if opponent piece could be trapped
-                for r in range(max(0, landing_row-1), min(6, landing_row+2)):
-                    for c in range(max(0, col-1), min(7, col+2)):
-                        if board[r,c] == -player_value:
-                            opponent_trapped = True
-                            break
-                            
-                if opponent_trapped and our_pieces >= 1:
-                    score *= 2
+            # Get component sizes after move
+            components = test_board.components  # Diagonal connections
+            components4 = test_board.components4  # Orthogonal connections
+            
+            # Find our components
+            our_components = np.unique(components[components * player_value > 0])
+            our_components4 = np.unique(components4[components4 * player_value > 0])
+            
+            # Score based on component sizes and connectivity
+            score = 0
+            for comp in our_components:
+                size = np.sum(components == comp)
+                if size >= 3:  # Larger components are better
+                    score += size * 2
                     
-                max_score = max(max_score, score)
-                
-            return max_score
+            for comp in our_components4:
+                size = np.sum(components4 == comp)
+                if size >= 3:
+                    score += size
+                    
+            return score
         except Exception:
             return 0
 
-    def _evaluate_piece_density(self, board, col, player_value):
-        """Evaluate piece density and potential for captures"""
+    def _evaluate_encirclement(self, board, col, player_value):
+        """Evaluate potential for encircling opponent pieces"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            density = 0
-            opponent_pieces = 0
-            our_pieces = 0
+            # Create test board
+            test_board = gamerules.Board()
+            test_board.board = board.copy()
+            test_board.updateBoard(col, player_value)
             
-            # Check 5x5 area centered on move
+            score = 0
+            # Check 5x5 area for opponent pieces that could be trapped
             for r in range(max(0, landing_row-2), min(6, landing_row+3)):
                 for c in range(max(0, col-2), min(7, col+3)):
-                    if board[r,c] == player_value:
-                        our_pieces += 1
-                    elif board[r,c] == -player_value:
-                        opponent_pieces += 1
+                    if board[r,c] == -player_value:
+                        # Count our pieces around opponent
+                        our_pieces = 0
+                        gaps = 0
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                nr, nc = r + dr, c + dc
+                                if 0 <= nr < 6 and 0 <= nc < 7:
+                                    if board[nr,nc] == player_value:
+                                        our_pieces += 1
+                                    elif board[nr,nc] == 0:
+                                        gaps += 1
                         
-            # High density of our pieces with some opponent pieces is good
-            if opponent_pieces > 0:
-                density = our_pieces * 2
-                
-            # Extra points for having more pieces than opponent
-            if our_pieces > opponent_pieces:
-                density += 2
-                
-            return density
+                        # Score based on encirclement potential
+                        if our_pieces >= 2 and gaps <= 3:
+                            score += our_pieces + (3 - gaps)
+                            
+            return score
         except Exception:
             return 0
 
-    def _evaluate_position_value(self, board, col, player_value):
-        """Evaluate strategic value of position"""
+    def _evaluate_position_control(self, board, col, player_value):
+        """Evaluate strategic control of the board"""
         try:
             landing_row = self._get_landing_row(board, col)
             if landing_row is None:
                 return -1
 
-            value = 0
+            control = 0
             
-            # Strong preference for center columns early game
+            # Strong center control early game
             if sum(1 for c in range(7) if board[5,c] == 0) >= 5:
                 center_dist = abs(col - 3)
-                value += (4 - center_dist) * 3
+                control += (4 - center_dist) * 3
+            
+            # Check for strategic positions
+            directions = [(0,1), (1,1), (1,0), (1,-1)]
+            for dr, dc in directions:
+                # Look both ways
+                our_count = 0
+                opp_count = 0
+                for mult in [-1, 1]:
+                    r, c = landing_row + dr * mult, col + dc * mult
+                    if 0 <= r < 6 and 0 <= c < 7:
+                        if board[r,c] == player_value:
+                            our_count += 1
+                        elif board[r,c] == -player_value:
+                            opp_count += 1
                 
-            # Value moves that build on existing pieces
-            for dr, dc in [(0,1), (0,-1), (1,0), (-1,0), (1,1), (1,-1), (-1,1), (-1,-1)]:
-                r, c = landing_row + dr, col + dc
-                if 0 <= r < 6 and 0 <= c < 7:
-                    if board[r,c] == player_value:
-                        value += 2
-                    elif board[r,c] == -player_value:
-                        value += 1  # Being next to opponent pieces can be good
-                        
-            return value
+                # Reward positions that help connect pieces or trap opponents
+                if our_count > 0 and opp_count > 0:
+                    control += our_count * 2 + opp_count
+                elif our_count > 0:
+                    control += our_count
+                    
+            return control
         except Exception:
             return 0
 
@@ -209,7 +216,7 @@ class Player(BasePlayer):
             print(f"Q-update error: {e}")
 
     def select_action(self, state, possible_actions):
-        """Select action with aggressive pattern formation"""
+        """Select action with focus on encirclement and component building"""
         try:
             # First, check for immediate wins
             for action in possible_actions:
@@ -223,14 +230,20 @@ class Player(BasePlayer):
 
             # Use Q-learning with epsilon-greedy
             if np.random.random() < self.epsilon:
-                # During exploration, prefer strong patterns and center
-                pattern_scores = [state[14 + action] * 2 + state[28 + action] for action in possible_actions]
-                total_score = sum(pattern_scores)
+                # During exploration, prefer moves that build strong components or encircle
+                scores = []
+                for action in possible_actions:
+                    comp_score = state[14 + action] * 2  # Component strength
+                    encircle_score = state[21 + action] * 3  # Encirclement potential
+                    position_score = state[28 + action]  # Position control
+                    scores.append(comp_score + encircle_score + position_score)
+                    
+                total_score = sum(scores)
                 if total_score > 0:
-                    probs = np.array(pattern_scores) / total_score
+                    probs = np.array(scores) / total_score
                     return np.random.choice(possible_actions, p=probs)
                 else:
-                    # If no good patterns, prefer center
+                    # If no good moves, prefer center
                     weights = [4, 5, 6, 8, 6, 5, 4]
                     probs = [weights[a] for a in possible_actions]
                     probs = np.array(probs) / sum(probs)
@@ -239,12 +252,18 @@ class Player(BasePlayer):
             # Get Q-values for all possible actions
             q_values = [self.get_q_value(state, action) for action in possible_actions]
             
-            # If Q-values are similar, use pattern strength
+            # If Q-values are similar, use heuristic scores
             if max(q_values) - min(q_values) < 0.1:
-                pattern_scores = [state[14 + action] * 2 + state[28 + action] for action in possible_actions]
-                best_score = max(pattern_scores)
-                best_actions = [action for action, score in zip(possible_actions, pattern_scores) 
-                              if score >= best_score - 1]  # Allow small variations
+                scores = []
+                for action in possible_actions:
+                    comp_score = state[14 + action] * 2
+                    encircle_score = state[21 + action] * 3
+                    position_score = state[28 + action]
+                    scores.append(comp_score + encircle_score + position_score)
+                
+                max_score = max(scores)
+                best_actions = [action for action, score in zip(possible_actions, scores) 
+                              if score >= max_score - 2]  # Allow some variation
                 return np.random.choice(best_actions)
             
             # Otherwise choose best Q-value
