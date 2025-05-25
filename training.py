@@ -130,7 +130,7 @@ class QLearningTrainer:
                     if player == agent:
                         try:
                             player_board = current_board.prepareBoardForPlayer(start_values[player])
-                            state = agent.extract_features(player_board, 1)
+                            state = agent.extract_features_for_training(player_board, 1)
                             game_experiences.append((state, action, current_board, start_values[player]))
                         except Exception as e:
                             print(f"Experience recording error: {e}")
