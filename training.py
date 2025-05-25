@@ -163,12 +163,12 @@ class QLearningTrainer:
             if game_experiences:
                 # Assign rewards
                 if winner == 1:  # Agent won
-                    moves_factor = max(0.5, 1.0 - (move_count / 42))  # Higher reward for quick wins
-                    base_reward = 3000 * moves_factor  # Huge reward for winning, scaled by game length
+                    moves_factor = max(0.6, 1.0 - (move_count / 42))  # Less aggressive scaling
+                    base_reward = 2000 * moves_factor  # Still high but not extreme
                 elif winner == -1:  # Agent lost
-                    base_reward = -1500  # Severe penalty for losing
+                    base_reward = -1000  # Less severe penalty
                 else:  # Draw
-                    base_reward = -800  # Very heavy penalty for draws
+                    base_reward = -500  # Moderate penalty for draws
 
                 for i, (state, action, prev_board, player_value) in enumerate(game_experiences):
                     try:
@@ -180,25 +180,27 @@ class QLearningTrainer:
                             next_state = state  # Terminal state
                             next_possible_actions = []
 
-                        # Reward with some decay for earlier moves
-                        reward_mult = (i + 1) / len(game_experiences)
+                        # More gradual reward decay
+                        reward_mult = 0.8 + (0.2 * (i + 1) / len(game_experiences))
 
                         # Add intermediate rewards
                         if i < len(game_experiences) - 1:
                             next_state, _, next_board, _ = game_experiences[i + 1]
                             
                             # Get feature scores for current and next state
-                            current_pattern = sum(1 for col in range(7) if agent._evaluate_winning_pattern(prev_board.board, col, player_value) >= 4)
-                            next_pattern = sum(1 for col in range(7) if agent._evaluate_winning_pattern(next_board.board, col, player_value) >= 4)
+                            current_contour = agent._evaluate_contour_progress(prev_board.board, action, player_value)
+                            next_contour = max(agent._evaluate_contour_progress(next_board.board, col, player_value) 
+                                            for col in range(7))
                             
-                            current_urgency = sum(1 for col in range(7) if agent._evaluate_move_urgency(prev_board.board, col, player_value) >= 3)
-                            next_urgency = sum(1 for col in range(7) if agent._evaluate_move_urgency(next_board.board, col, player_value) >= 3)
+                            current_prevention = agent._evaluate_contour_prevention(prev_board.board, action, player_value)
+                            next_prevention = max(agent._evaluate_contour_prevention(next_board.board, col, player_value) 
+                                               for col in range(7))
                             
                             # Reward improvements in position
-                            if next_pattern > current_pattern:
-                                final_reward = base_reward * reward_mult + 200  # Big bonus for forming winning patterns
-                            elif next_urgency > current_urgency:
-                                final_reward = base_reward * reward_mult + 100  # Bonus for addressing urgent threats
+                            if next_contour > current_contour:
+                                final_reward = base_reward * reward_mult + 150  # Bonus for better contour position
+                            elif next_prevention > current_prevention:
+                                final_reward = base_reward * reward_mult + 100  # Bonus for better prevention
                             else:
                                 final_reward = base_reward * reward_mult
                         else:
@@ -218,8 +220,8 @@ class QLearningTrainer:
         """Train the Q-learning agent"""
         agent = Player("QLearning Agent")
         agent.epsilon = 1.0  # Start with pure exploration
-        agent.learning_rate = 0.6  # Very aggressive learning
-        agent.discount_factor = 0.7  # Focus heavily on immediate rewards
+        agent.learning_rate = 0.4  # Moderate learning rate for stability
+        agent.discount_factor = 0.8  # Higher discount to value future contours
 
         print(f"Starting training for {training_minutes} minutes...")
         print("=" * 60)
